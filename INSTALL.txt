@@ -1,0 +1,55 @@
+[PYTHON](https://www.python.org/downloads/windows/)
+Shell :: python --version
+
+[FFMEG](https://www.gyan.dev/ffmpeg/builds/)
+release essentials
+Extraire dans -> C:\ffmpeg
+Le dossier doit exister -> C:\ffmpeg\bin
+
+Aller dans : Variables d’environnement
+PATH -> Ajouter : C:\ffmpeg\bin
+
+Shell :: ffmpeg -version
+
+Dépendances Python (3.9+) :
+Shell :: pip install faster-whisper watchdog
+
+Créer les dossiers (déjà fait / vérifier emplacement)
+mkdir C:\WhisperAuto
+mkdir C:\WhisperAuto\inbox
+mkdir C:\WhisperAuto\outbox
+mkdir C:\WhisperAuto\processed
+
+Tester pipeline :
+cd C:\WhisperAuto
+python auto_transcribe.py
+
+( Déposer un fichier audio dans 'inbox' )
+Résultat attendu :
+- Création d'un .wav
+- Création d'un .txt
+- Fichier source déplacé dans 'processed'
+
+Créer automatisation pour le démarrage :
+Dans 'Planificateur de tâches'
+Créer une tâche 'Whisper Auto'
+Cocher :
+* Exécuter avec les autorisations maximales
+* Exécuter même si l’utilisateur n’est pas connecté
+Déclencheur -> Au démarrage
+Action -> C:\WhisperAuto\start_whisper.bat
+
+Formats supportés :
+.ds2
+.dss
+.mp3
+.wav
+.m4a
+
+Points de vigilance :
+- Modèle large-v3 performant mais lent -> passage en 'medium' voire 'small' si trop long > compromis qualité
+- FFmpeg supporte bien le DSS, mais mal le DS2/DSS Pro -> doc : https://trac.ffmpeg.org/ticket/6091
+- le script attend que la taille du fichier se stabilise, donc c’est déjà une bonne protection, mais Watchdog peut déclencher dès le début de la copie, pas forcément quand elle est finie donc toujours vérifier le résultat.
+    Sinon on oublie le reverse engineering et on installe le logiciel https://audiosupport.omsystem.com/en/product-category/software/ (solution plus manuelle)
+
+    Pas d'autres observations.
