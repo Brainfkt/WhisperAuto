@@ -1,55 +1,202 @@
-[PYTHON](https://www.python.org/downloads/windows/)
-Shell :: python --version
+WisperAuto - installation rapide Windows
+=======================================
 
-[FFMEG](https://www.gyan.dev/ffmpeg/builds/)
-release essentials
-Extraire dans -> C:\ffmpeg
-Le dossier doit exister -> C:\ffmpeg\bin
+Objectif
+--------
+WisperAuto transcrit localement des fichiers audio et produit plusieurs sorties :
+- transcription brute ;
+- transcription nettoyee ;
+- transcription intelligente avec commandes vocales interpretees ;
+- compte rendu structure non generatif.
 
-Aller dans : Variables d’environnement
-PATH -> Ajouter : C:\ffmpeg\bin
+Les fichiers audio ne sont pas envoyes en ligne. Le seul acces Internet possible est
+le telechargement initial du modele Whisper si aucun modele local n'est disponible
+et si l'utilisateur l'autorise explicitement.
 
-Shell :: ffmpeg -version
 
-Dépendances Python (3.9+) :
-Shell :: pip install faster-whisper watchdog
+1. Installer Python
+-------------------
+Installer Python 3.11 ou 3.12 :
+https://www.python.org/downloads/windows/
 
-Créer les dossiers (déjà fait / vérifier emplacement)
-mkdir C:\WhisperAuto
-mkdir C:\WhisperAuto\inbox
-mkdir C:\WhisperAuto\outbox
-mkdir C:\WhisperAuto\processed
+Verifier dans un terminal :
+python --version
 
-Tester pipeline :
-cd C:\WhisperAuto
-python auto_transcribe.py
+Pour le deploiement client, eviter Python global Anaconda et Python 3.13.
+Le lanceur Windows cree un venv local ".venv" avec Python 3.11 en priorite,
+puis Python 3.12 si 3.11 n'est pas disponible.
 
-( Déposer un fichier audio dans 'inbox' )
-Résultat attendu :
-- Création d'un .wav
-- Création d'un .txt
-- Fichier source déplacé dans 'processed'
 
-Créer automatisation pour le démarrage :
-Dans 'Planificateur de tâches'
-Créer une tâche 'Whisper Auto'
-Cocher :
-* Exécuter avec les autorisations maximales
-* Exécuter même si l’utilisateur n’est pas connecté
-Déclencheur -> Au démarrage
-Action -> C:\WhisperAuto\start_whisper.bat
+2. Installer les dependances depuis l'interface
+-----------------------------------------------
+Au lancement, ouvrir :
+Parametres -> Installer FFmpeg
+Parametres -> choisir le moteur
+Parametres -> Installer moteur
+Parametres -> Telecharger modele moteur
 
-Formats supportés :
-.ds2
-.dss
-.mp3
-.wav
-.m4a
+Sur Windows, l'installation automatique de FFmpeg utilise en priorite winget,
+puis Chocolatey ou Scoop si disponibles. Si aucun installateur n'est disponible,
+installer FFmpeg manuellement :
 
-Points de vigilance :
-- Modèle large-v3 performant mais lent -> passage en 'medium' voire 'small' si trop long > compromis qualité
-- FFmpeg supporte bien le DSS, mais mal le DS2/DSS Pro -> doc : https://trac.ffmpeg.org/ticket/6091
-- le script attend que la taille du fichier se stabilise, donc c’est déjà une bonne protection, mais Watchdog peut déclencher dès le début de la copie, pas forcément quand elle est finie donc toujours vérifier le résultat.
-    Sinon on oublie le reverse engineering et on installe le logiciel https://audiosupport.omsystem.com/en/product-category/software/ (solution plus manuelle)
+1. Telecharger "release essentials" :
+   https://www.gyan.dev/ffmpeg/builds/
+2. Extraire dans :
+   C:\ffmpeg
+3. Ajouter au PATH :
+   C:\ffmpeg\bin
+4. Verifier :
+   ffmpeg -version
 
-    Pas d'autres observations.
+
+3. Lancer WisperAuto
+--------------------
+Placer le dossier du projet par exemple dans :
+C:\WisperAuto
+
+Double-cliquer :
+start_whisper.bat
+
+Au premier lancement, le script cree un environnement Python local ".venv".
+
+Les donnees utilisateur sont stockees par defaut dans :
+%USERPROFILE%\Documents\WisperAuto
+
+Pour utiliser un autre dossier :
+set WISPERAUTO_HOME=D:\WisperAutoData
+start_whisper.bat
+
+
+4. Utilisation
+--------------
+Dans l'application :
+1. Cliquer "Ajouter fichiers".
+2. Selectionner un ou plusieurs fichiers .mp3, .wav, .m4a, .dss ou .ds2.
+3. Les fichiers apparaissent dans "File et historique".
+4. Cliquer "Transcrire selection" ou "Tout transcrire".
+5. Suivre la progression, l'etat et l'ETA quand elle est disponible.
+6. Comparer les modes via le menu :
+   - Transcription brute ;
+   - Transcription nettoyee ;
+   - Transcription intelligente ;
+   - Compte rendu structure.
+7. Dans Parametres, choisir le profil performance :
+   - Rapide ;
+   - Equilibre ;
+   - Precis.
+8. Utiliser "Copier", "Exporter" ou "Dossier".
+
+Le bouton "Annuler" annule un traitement actif ou une entree encore en attente.
+Le bouton "Supprimer" retire l'entree d'historique et les sorties .txt generees.
+Les audios archives ou echoues sont conserves pour eviter une perte.
+
+Le bouton "Tester performances" dans Parametres lance un benchmark local sur un
+extrait temporaire du fichier choisi. Il compare les moteurs qui ont deja un
+modele local et affiche le ratio temps reel ainsi que le moteur recommande.
+
+
+5. Commandes vocales configurables
+----------------------------------
+Au premier lancement, WisperAuto cree :
+%USERPROFILE%\Documents\WisperAuto\voice_commands.json
+
+Ce fichier permet d'ajouter ou modifier les commandes vocales :
+- "sauter ligne" -> retour a la ligne ;
+- "nouveau paragraphe" -> nouveau paragraphe ;
+- "point", "virgule", "deux-points" -> ponctuation ;
+- "nouvelle puce", "fin de liste" -> listes ;
+- marqueurs de contexte pour eviter les transformations risquees.
+
+En cas d'ambiguite, WisperAuto privilegie la transcription naturelle.
+
+
+6. Confidentialite
+------------------
+- Traitement audio local.
+- Historique local dans le dossier WisperAuto.
+- Aucun envoi audio volontaire.
+- Telechargement du modele uniquement apres consentement.
+- Les modeles sont telecharges par moteur et par format :
+  models\faster-whisper\<modele>
+  models\mlx-whisper\<modele>
+  models\whisper.cpp\<modele>
+- Les fichiers echoues sont conserves dans "failed" pour eviter une perte.
+
+Attention : les transcriptions peuvent contenir des informations sensibles.
+Eviter de placer le dossier WisperAuto dans un service de synchronisation cloud.
+
+
+7. Depannage
+------------
+FFmpeg introuvable :
+- verifier que C:\ffmpeg\bin est dans le PATH ;
+- relancer le terminal ou Windows.
+
+Modele absent :
+- ouvrir Parametres puis cliquer "Telecharger modele moteur" ;
+- ou definir le chemin de modele adapte :
+  WISPERAUTO_MODEL_PATH pour faster-whisper ;
+  WISPERAUTO_MLX_MODEL_PATH pour MLX ;
+  WISPERAUTO_WHISPER_CPP_MODEL_PATH pour whisper.cpp.
+
+Le telechargement du modele affiche un journal avec des messages reguliers
+d'avancement. Par defaut, le delai maximal est de 120 minutes. Pour le modifier :
+set WISPERAUTO_MODEL_DOWNLOAD_TIMEOUT_MINUTES=180
+start_whisper.bat
+
+Si le telechargement de large-v3 est trop lent, choisir "small" ou "medium" dans
+Parametres avant de telecharger le modele. Le modele par defaut est
+large-v3-turbo, qui est plus adapte a une UX locale que large-v3 complet.
+Par defaut, WisperAuto desactive le backend Hugging Face Xet pour que le fichier
+model.bin progresse de facon plus lisible dans le dossier cible. Pour reactiver Xet :
+set WISPERAUTO_DISABLE_HF_XET=0
+start_whisper.bat
+
+faster-whisper absent :
+- ouvrir Parametres ;
+- choisir "faster-whisper" ou "Auto" ;
+- cliquer "Installer moteur".
+
+MLX Mac absent :
+- disponible uniquement sur Mac Apple Silicon ;
+- choisir "MLX Mac" puis cliquer "Installer moteur" ;
+- telecharger ensuite le modele MLX depuis la meme fenetre.
+
+whisper.cpp absent :
+- sur macOS avec Homebrew, choisir "whisper.cpp" puis "Installer moteur" ;
+- sinon installer manuellement le binaire whisper-cli ;
+- definir WISPERAUTO_WHISPER_CPP_BINARY si le binaire n'est pas dans le PATH.
+
+FFmpeg absent :
+- ouvrir Parametres ;
+- cliquer "Installer FFmpeg" ;
+- si Windows ne met pas le PATH a jour dans la session courante, relancer WisperAuto.
+
+Audio DSS/DS2 illisible :
+- certains formats DSS Pro ou DS2 ne sont pas pris en charge par FFmpeg ;
+- convertir d'abord avec le logiciel du dictaphone si necessaire.
+
+Transcription lente :
+- utiliser le profil "Rapide" dans Parametres ;
+- sur Mac Apple Silicon, essayer le moteur "MLX Mac" ;
+- sur Windows/Linux avec GPU NVIDIA, utiliser "Auto" ou "faster-whisper" avec CUDA disponible ;
+- en CPU-only, essayer "small" ou "medium", ou "whisper.cpp" avec modele quantized ;
+- lancer "Tester performances" dans Parametres pour comparer les moteurs locaux ;
+- essayer un modele plus petit :
+  set WISPERAUTO_MODEL=medium
+  start_whisper.bat
+- les fichiers .mp3, .m4a et .wav sont lus directement quand possible ;
+- le modele reste charge en memoire pendant le batch pour accelerer les fichiers suivants.
+
+Reglages performance avances possibles par variable d'environnement :
+- WISPERAUTO_CPU_THREADS=6
+- WISPERAUTO_BATCH_SIZE=4
+- WISPERAUTO_WHISPER_CPP_THREADS=6
+- WISPERAUTO_VAD_SILENCE_MS=500
+- WISPERAUTO_BENCHMARK_SECONDS=90
+
+Mode console surveillance :
+python auto_transcribe.py --watch
+
+Traitement d'un seul fichier :
+python auto_transcribe.py --once "C:\chemin\fichier.mp3"

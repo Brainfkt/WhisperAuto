@@ -1,1 +1,25 @@
-/.DS_Store
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Donnees sensibles et sorties locales
+/inbox/*
+/outbox/*
+/processed/*
+/failed/*
+/logs/*
+/models/*
+/data/*
+
+# Dossiers runtime crees sous le dossier projet si WISPERAUTO_HOME pointe ici
+*.wav
+*.mp3
+*.m4a
+*.dss
+*.ds2
+*.txt.part
