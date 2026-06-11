@@ -227,10 +227,12 @@ def resolve_backend_id(config: AppConfig) -> str:
     mlx_ready = mlx_whisper_runtime_ok() and config.local_model_path(BACKEND_MLX_WHISPER)
 
     if is_macos_arm64():
-        if config.transcription_profile == PROFILE_FAST and cpp_ready:
-            return BACKEND_WHISPER_CPP
         if mlx_ready:
             return BACKEND_MLX_WHISPER
+        if faster_ready:
+            return BACKEND_FASTER_WHISPER
+        if cpp_ready:
+            return BACKEND_WHISPER_CPP
         return BACKEND_FASTER_WHISPER
 
     if cuda_available():

@@ -14,6 +14,11 @@ DEFAULT_MODEL_SIZE = "large-v3-turbo"
 PROFILE_FAST = "fast"
 PROFILE_BALANCED = "balanced"
 PROFILE_PRECISE = "precise"
+PROFILE_CHOICES = {
+    PROFILE_FAST,
+    PROFILE_BALANCED,
+    PROFILE_PRECISE,
+}
 BACKEND_AUTO = "auto"
 BACKEND_FASTER_WHISPER = "faster-whisper"
 BACKEND_MLX_WHISPER = "mlx-whisper"
@@ -77,6 +82,25 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "oui", "on"}
+
+
+def _safe_int(value, default: int, minimum: int | None = None) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if minimum is not None and parsed < minimum:
+        return default
+    return parsed
+
+
+def _setting_int(settings: dict, key: str, env_name: str, default: int, minimum: int | None = None) -> int:
+    return _safe_int(os.environ.get(env_name, settings.get(key, default)), default, minimum)
+
+
+def _setting_choice(settings: dict, key: str, env_name: str, choices: set[str], default: str) -> str:
+    value = str(os.environ.get(env_name, settings.get(key, default)) or default)
+    return value if value in choices else default
 
 
 def default_home() -> Path:
@@ -151,6 +175,9 @@ class AppConfig:
     transcription_profile: str = PROFILE_FAST
     model_download_timeout_minutes: int = 120
     disable_hf_xet: bool = True
+    hf_token: str = ""
+    hf_fast_download: bool = False
+    hf_xet_concurrency: int = 32
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -173,25 +200,25 @@ class AppConfig:
                 "WISPERAUTO_WHISPER_CPP_BINARY",
                 str(settings.get("whisper_cpp_binary") or ""),
             ),
-            cpu_threads=int(os.environ.get("WISPERAUTO_CPU_THREADS", settings.get("cpu_threads") or "0")),
-            num_workers=int(os.environ.get("WISPERAUTO_NUM_WORKERS", settings.get("num_workers") or "1")),
-            batch_size=int(os.environ.get("WISPERAUTO_BATCH_SIZE", settings.get("batch_size") or "0")),
-            whisper_cpp_threads=int(
-                os.environ.get("WISPERAUTO_WHISPER_CPP_THREADS", settings.get("whisper_cpp_threads") or "0")
+            cpu_threads=_setting_int(settings, "cpu_threads", "WISPERAUTO_CPU_THREADS", 0, minimum=0),
+            num_workers=_setting_int(settings, "num_workers", "WISPERAUTO_NUM_WORKERS", 1, minimum=1),
+            batch_size=_setting_int(settings, "batch_size", "WISPERAUTO_BATCH_SIZE", 0, minimum=0),
+            whisper_cpp_threads=_setting_int(
+                settings, "whisper_cpp_threads", "WISPERAUTO_WHISPER_CPP_THREADS", 0, minimum=0
             ),
-            whisper_cpp_beam_size=int(
-                os.environ.get("WISPERAUTO_WHISPER_CPP_BEAM_SIZE", settings.get("whisper_cpp_beam_size") or "0")
+            whisper_cpp_beam_size=_setting_int(
+                settings, "whisper_cpp_beam_size", "WISPERAUTO_WHISPER_CPP_BEAM_SIZE", 0, minimum=0
             ),
-            whisper_cpp_best_of=int(
-                os.environ.get("WISPERAUTO_WHISPER_CPP_BEST_OF", settings.get("whisper_cpp_best_of") or "0")
+            whisper_cpp_best_of=_setting_int(
+                settings, "whisper_cpp_best_of", "WISPERAUTO_WHISPER_CPP_BEST_OF", 0, minimum=0
             ),
-            vad_silence_ms=int(os.environ.get("WISPERAUTO_VAD_SILENCE_MS", settings.get("vad_silence_ms") or "0")),
-            benchmark_seconds=int(
-                os.environ.get("WISPERAUTO_BENCHMARK_SECONDS", settings.get("benchmark_seconds") or "90")
+            vad_silence_ms=_setting_int(settings, "vad_silence_ms", "WISPERAUTO_VAD_SILENCE_MS", 0, minimum=0),
+            benchmark_seconds=_setting_int(
+                settings, "benchmark_seconds", "WISPERAUTO_BENCHMARK_SECONDS", 90, minimum=10
             ),
-            max_file_mb=int(os.environ.get("WISPERAUTO_MAX_FILE_MB", "2048")),
-            max_duration_minutes=int(
-                os.environ.get("WISPERAUTO_MAX_DURATION_MINUTES", "240")
+            max_file_mb=_safe_int(os.environ.get("WISPERAUTO_MAX_FILE_MB", "2048"), 2048, minimum=1),
+            max_duration_minutes=_safe_int(
+                os.environ.get("WISPERAUTO_MAX_DURATION_MINUTES", "240"), 240, minimum=1
             ),
             keep_intermediate_wav=_env_bool("WISPERAUTO_KEEP_WAV", False),
             allow_model_download=_env_bool("WISPERAUTO_ALLOW_MODEL_DOWNLOAD", False),
@@ -199,14 +226,29 @@ class AppConfig:
                 "WISPERAUTO_OUTPUT_MODE",
                 str(settings.get("output_mode") or "smart"),
             ),
-            transcription_profile=os.environ.get(
+            transcription_profile=_setting_choice(
+                settings,
+                "transcription_profile",
                 "WISPERAUTO_TRANSCRIPTION_PROFILE",
-                str(settings.get("transcription_profile") or PROFILE_FAST),
+                PROFILE_CHOICES,
+                PROFILE_FAST,
             ),
-            model_download_timeout_minutes=int(
-                os.environ.get("WISPERAUTO_MODEL_DOWNLOAD_TIMEOUT_MINUTES", "120")
+            model_download_timeout_minutes=_safe_int(
+                os.environ.get("WISPERAUTO_MODEL_DOWNLOAD_TIMEOUT_MINUTES", "120"), 120, minimum=1
             ),
             disable_hf_xet=_env_bool("WISPERAUTO_DISABLE_HF_XET", True),
+            hf_token=os.environ.get("HF_TOKEN") or os.environ.get("WISPERAUTO_HF_TOKEN") or str(settings.get("hf_token") or ""),
+            hf_fast_download=_env_bool(
+                "WISPERAUTO_HF_FAST_DOWNLOAD",
+                bool(settings.get("hf_fast_download") or False),
+            ),
+            hf_xet_concurrency=_setting_int(
+                settings,
+                "hf_xet_concurrency",
+                "WISPERAUTO_HF_XET_CONCURRENCY",
+                32,
+                minimum=1,
+            ),
         )
 
     @property
@@ -322,14 +364,16 @@ class AppConfig:
 
         if self.models_dir.exists():
             if backend == BACKEND_WHISPER_CPP:
+                model_key = model_dir_name(self.model_size).lower()
                 matches = sorted(
                     item
                     for suffix in ("*.bin", "*.gguf")
                     for item in self.models_dir.joinpath(backend).rglob(suffix)
                     if item.is_file()
                 )
-                if matches:
-                    return matches[0]
+                for item in matches:
+                    if model_key in str(item).lower():
+                        return item
             elif backend == BACKEND_FASTER_WHISPER:
                 matches = sorted(self.models_dir.rglob("model.bin"))
                 for match in matches:
@@ -374,6 +418,9 @@ class AppConfig:
             "benchmark_seconds": self.benchmark_seconds,
             "output_mode": self.output_mode,
             "transcription_profile": self.transcription_profile,
+            "hf_token": self.hf_token,
+            "hf_fast_download": self.hf_fast_download,
+            "hf_xet_concurrency": self.hf_xet_concurrency,
         }
         tmp_path = self.settings_path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

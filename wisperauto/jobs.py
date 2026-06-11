@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import threading
 from typing import Iterable
@@ -17,6 +17,11 @@ STATUS_TRANSCRIBING = "transcribing"
 STATUS_DONE = "done"
 STATUS_ERROR = "error"
 STATUS_CANCELLED = "cancelled"
+STATUS_IN_PROGRESS = {
+    STATUS_QUEUED,
+    STATUS_CONVERTING,
+    STATUS_TRANSCRIBING,
+}
 
 STATUS_LABELS = {
     STATUS_READY: "Pret",
@@ -30,7 +35,7 @@ STATUS_LABELS = {
 
 
 def utc_now() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 @dataclass
@@ -140,3 +145,25 @@ class JobStore:
             for record in sorted(records, key=lambda item: item.created_at):
                 handle.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
         tmp_path.replace(self.history_path)
+
+
+def recover_interrupted_records(store: JobStore, records: Iterable[JobRecord]) -> list[JobRecord]:
+    """Mark jobs left in an in-progress state by a previous app session as retryable."""
+
+    recovered: list[JobRecord] = []
+    for record in records:
+        if record.status not in STATUS_IN_PROGRESS:
+            recovered.append(record)
+            continue
+        recovered.append(
+            store.update(
+                record,
+                status=STATUS_CANCELLED,
+                phase="cancelled",
+                message="Traitement interrompu lors d'une session precedente.",
+                progress_detail="Relancez la transcription ou supprimez cette entree.",
+                eta_seconds=None,
+                finished_at=utc_now(),
+            )
+        )
+    return recovered

@@ -31,7 +31,7 @@ class BackendsTest(unittest.TestCase):
             config = AppConfig(home=Path(tmpdir), backend=BACKEND_AUTO)
             model_dir = config.backend_model_dir(BACKEND_WHISPER_CPP)
             model_dir.mkdir(parents=True)
-            (model_dir / "ggml-small.bin").write_bytes(b"model")
+            (model_dir / "ggml-large-v3-turbo.bin").write_bytes(b"model")
             binary = Path(tmpdir) / "whisper-cli"
             binary.write_text("#!/bin/sh\n", encoding="utf-8")
 
@@ -49,6 +49,46 @@ class BackendsTest(unittest.TestCase):
                 with patch("wisperauto.backends.platform.machine", lambda: "arm64"):
                     with patch("wisperauto.backends.mlx_whisper_runtime_ok", lambda: False):
                         self.assertEqual(resolve_backend_id(config), BACKEND_FASTER_WHISPER)
+
+    def test_auto_prefers_mlx_over_whisper_cpp_on_mac_when_both_ready(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = AppConfig(home=Path(tmpdir), backend=BACKEND_AUTO)
+            mlx_dir = config.backend_model_dir(BACKEND_MLX_WHISPER)
+            mlx_dir.mkdir(parents=True)
+            (mlx_dir / "config.json").write_text("{}", encoding="utf-8")
+            cpp_dir = config.backend_model_dir(BACKEND_WHISPER_CPP)
+            cpp_dir.mkdir(parents=True)
+            (cpp_dir / "ggml-large-v3-turbo.bin").write_bytes(b"model")
+            binary = Path(tmpdir) / "whisper-cli"
+            binary.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            with patch("wisperauto.backends.platform.system", lambda: "Darwin"):
+                with patch("wisperauto.backends.platform.machine", lambda: "arm64"):
+                    with patch("wisperauto.backends.mlx_whisper_runtime_ok", lambda: True):
+                        with patch("wisperauto.backends.whisper_cpp_binary", lambda _config: binary):
+                            self.assertEqual(resolve_backend_id(config), BACKEND_MLX_WHISPER)
+
+    def test_auto_prefers_faster_whisper_over_whisper_cpp_on_mac_without_mlx(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = AppConfig(home=Path(tmpdir), backend=BACKEND_AUTO)
+            faster_dir = config.backend_model_dir(BACKEND_FASTER_WHISPER)
+            faster_dir.mkdir(parents=True)
+            (faster_dir / "model.bin").write_bytes(b"model")
+            cpp_dir = config.backend_model_dir(BACKEND_WHISPER_CPP)
+            cpp_dir.mkdir(parents=True)
+            (cpp_dir / "ggml-large-v3-turbo.bin").write_bytes(b"model")
+            binary = Path(tmpdir) / "whisper-cli"
+            binary.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            with patch("wisperauto.backends.platform.system", lambda: "Darwin"):
+                with patch("wisperauto.backends.platform.machine", lambda: "arm64"):
+                    with patch("wisperauto.backends.mlx_whisper_runtime_ok", lambda: False):
+                        with patch("wisperauto.backends.whisper_cpp_binary", lambda _config: binary):
+                            with patch(
+                                "wisperauto.backends.python_dependency_available",
+                                lambda name: name == "faster_whisper",
+                            ):
+                                self.assertEqual(resolve_backend_id(config), BACKEND_FASTER_WHISPER)
 
     def test_faster_whisper_uses_cuda_policy_when_available(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -73,7 +113,7 @@ class BackendsTest(unittest.TestCase):
             config = AppConfig(home=Path(tmpdir), backend=BACKEND_WHISPER_CPP)
             model_dir = config.backend_model_dir(BACKEND_WHISPER_CPP)
             model_dir.mkdir(parents=True)
-            model_file = model_dir / "ggml-small.bin"
+            model_file = model_dir / "ggml-large-v3-turbo.bin"
             model_file.write_bytes(b"model")
             binary = Path(tmpdir) / "whisper-cli"
             binary.write_text("#!/bin/sh\n", encoding="utf-8")

@@ -117,6 +117,31 @@ class PostProcessorTest(unittest.TestCase):
         self.assertIn("procès-verbal de restitution.", smart)
         self.assertIn("compte CARPA.", smart)
 
+    def test_actions_are_isolated_between_build_outputs_calls(self):
+        processor = self._processor()
+        first = processor.build_outputs("Bonjour point\nsauter ligne\n")
+        first_actions = list(first.actions)
+        second = processor.build_outputs("Au revoir point\n")
+
+        self.assertIn("Retour a la ligne.", first_actions)
+        self.assertNotIn("Retour a la ligne.", second.actions)
+        self.assertEqual(first.actions, first_actions)
+
+    def test_replacement_command_handles_accents_in_existing_text(self):
+        processor = self._processor()
+        result = processor.build_outputs(
+            "société Toré Films point\n"
+            "remplace societe par entreprise\n"
+            "première phrase point\n"
+            "remplace premiere par seconde\n"
+        )
+
+        smart = result.outputs[MODE_SMART]
+        self.assertIn("entreprise Toré Films.", smart)
+        self.assertIn("seconde phrase.", smart)
+        self.assertNotIn("société Toré Films.", smart)
+        self.assertNotIn("première phrase.", smart)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -150,11 +150,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compute-type", default="int8")
     parser.add_argument("--backend", default=BACKEND_FASTER_WHISPER)
     parser.add_argument("--disable-hf-xet", action="store_true")
+    parser.add_argument("--hf-fast-download", action="store_true")
+    parser.add_argument("--hf-xet-concurrency", type=int, default=32)
     args = parser.parse_args(argv)
 
-    if args.disable_hf_xet:
+    if args.hf_fast_download:
+        os.environ.pop("HF_HUB_DISABLE_XET", None)
+        os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
+        os.environ["HF_XET_NUM_CONCURRENT_RANGE_GETS"] = str(max(1, args.hf_xet_concurrency))
+        os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
+        print(
+            "Mode Hugging Face rapide active : hf-xet haute performance, "
+            f"{os.environ['HF_XET_NUM_CONCURRENT_RANGE_GETS']} connexions concurrentes.",
+            flush=True,
+        )
+    elif args.disable_hf_xet:
         os.environ["HF_HUB_DISABLE_XET"] = "1"
         print("Backend Hugging Face Xet desactive pour un telechargement plus lisible.", flush=True)
+    if os.environ.get("HF_TOKEN"):
+        print("Token Hugging Face detecte pour ce telechargement.", flush=True)
 
     config = AppConfig(
         home=Path(args.home),

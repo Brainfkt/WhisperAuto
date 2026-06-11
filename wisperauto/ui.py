@@ -8,7 +8,9 @@ import shutil
 import subprocess
 import sys
 import threading
-from dataclasses import replace
+import webbrowser
+import importlib.util
+from dataclasses import dataclass, replace
 from pathlib import Path
 from tkinter import END, LEFT, VERTICAL, W, filedialog, messagebox
 import tkinter as tk
@@ -20,6 +22,9 @@ from .backends import BACKEND_LABELS, BACKEND_ORDER, backend_health, resolve_bac
 from .config import (
     APP_NAME,
     BACKEND_AUTO,
+    BACKEND_FASTER_WHISPER,
+    BACKEND_MLX_WHISPER,
+    BACKEND_WHISPER_CPP,
     PROFILE_BALANCED,
     PROFILE_FAST,
     PROFILE_PRECISE,
@@ -33,6 +38,7 @@ from .installers import (
     backend_install_plan,
     download_model,
     ffmpeg_plan,
+    hf_acceleration_plan,
     run_install_plan,
 )
 from .jobs import (
@@ -40,11 +46,13 @@ from .jobs import (
     STATUS_CONVERTING,
     STATUS_DONE,
     STATUS_ERROR,
+    STATUS_IN_PROGRESS,
     STATUS_QUEUED,
     STATUS_READY,
     STATUS_TRANSCRIBING,
     JobRecord,
     JobStore,
+    recover_interrupted_records,
 )
 from .pipeline import TranscriptionPipeline, check_environment, format_eta
 from .postprocess import MODE_LABELS, MODE_RAW, MODE_CLEANED, MODE_SMART, MODE_REPORT
@@ -61,7 +69,17 @@ PROFILE_LABELS = {
 PROFILE_BY_LABEL = {label: profile for profile, label in PROFILE_LABELS.items()}
 BACKEND_BY_LABEL = {label: backend for backend, label in BACKEND_LABELS.items()}
 RETRYABLE_STATUSES = {STATUS_READY, STATUS_CANCELLED, STATUS_ERROR}
-RUNNING_STATUSES = {STATUS_QUEUED, STATUS_CONVERTING, STATUS_TRANSCRIBING}
+RUNNING_STATUSES = STATUS_IN_PROGRESS
+HF_TOKEN_URL = "https://huggingface.co/settings/tokens/new?tokenType=read"
+
+
+@dataclass(frozen=True)
+class DownloadItem:
+    key: str
+    label: str
+    kind: str
+    backend: str = ""
+    model_size: str = ""
 
 
 class WisperAutoApp:
@@ -297,7 +315,7 @@ class WisperAutoApp:
         self.message_label.grid(row=1, column=3, sticky="w")
 
     def _load_history(self) -> None:
-        for record in self.store.latest():
+        for record in recover_interrupted_records(self.store, self.store.latest()):
             self.jobs[record.id] = record
             self._upsert_tree_record(record)
         self._refresh_queue_count()
@@ -382,7 +400,7 @@ class WisperAutoApp:
     def _refresh_queue_count(self) -> None:
         total = len(self.jobs)
         pending = len([record for record in self.jobs.values() if record.status in RETRYABLE_STATUSES])
-        running = len([record for record in self.jobs.values() if record.status in RUNNING_STATUSES])
+        running = len([record for record in self.jobs.values() if self._record_is_live(record)])
         parts = [f"{total} element" + ("" if total <= 1 else "s")]
         if pending:
             parts.append(f"{pending} pret" + ("" if pending <= 1 else "s"))
@@ -450,6 +468,9 @@ class WisperAutoApp:
                 records.append(self.jobs[job_id])
         return records
 
+    def _record_is_live(self, record: JobRecord) -> bool:
+        return record.id == self.active_job_id or record.id in self.queued_ids
+
     def _select_record(self, job_id: str) -> None:
         item_id = self.tree_items.get(job_id)
         if item_id:
@@ -474,7 +495,7 @@ class WisperAutoApp:
             minutes = int(record.duration_seconds // 60)
             seconds = int(record.duration_seconds % 60)
             meta_parts.append(f"Duree : {minutes:02d}:{seconds:02d}")
-        if record.progress_detail and record.status in RUNNING_STATUSES:
+        if record.progress_detail and self._record_is_live(record):
             meta_parts.append(record.progress_detail)
         self.meta_label.configure(text=" | ".join(meta_parts))
 
@@ -653,6 +674,18 @@ class WisperAutoApp:
                 self.jobs[record.id] = updated
                 self._upsert_tree_record(updated)
                 cancelled += 1
+            elif record.status in RUNNING_STATUSES:
+                updated = self.store.update(
+                    record,
+                    status=STATUS_CANCELLED,
+                    phase="cancelled",
+                    message="Traitement interrompu. Vous pouvez relancer ou supprimer cette entree.",
+                    progress_detail="",
+                    eta_seconds=None,
+                )
+                self.jobs[record.id] = updated
+                self._upsert_tree_record(updated)
+                cancelled += 1
 
         if cancelled:
             self._set_message("Annulation demandee.", error=False)
@@ -670,7 +703,7 @@ class WisperAutoApp:
             self._set_message("Selectionnez une retranscription a supprimer.", error=True)
             return
 
-        locked = [record for record in records if record.status in RUNNING_STATUSES or record.id == self.active_job_id]
+        locked = [record for record in records if self._record_is_live(record)]
         if locked:
             self._set_message("Annulez ou laissez terminer le traitement avant de supprimer.", error=True)
             return
@@ -820,8 +853,8 @@ class SettingsDialog:
         self.app = app
         self.window = tk.Toplevel(app.root)
         self.window.title("Parametres et installation")
-        self.window.geometry("760x540")
-        self.window.minsize(680, 460)
+        self.window.geometry("860x640")
+        self.window.minsize(760, 540)
         self.window.transient(app.root)
         self.window.configure(bg="#ffffff")
         self.window.protocol("WM_DELETE_WINDOW", self.close)
@@ -835,6 +868,9 @@ class SettingsDialog:
         self.whisper_cpp_var = tk.StringVar()
         self.active_backend_var = tk.StringVar()
         self.model_var = tk.StringVar()
+        self.hf_status_var = tk.StringVar()
+        self.hf_token_var = tk.StringVar(value=app.config.hf_token)
+        self.hf_fast_var = tk.BooleanVar(value=app.config.hf_fast_download)
         self.backend_choice = tk.StringVar(
             value=BACKEND_LABELS.get(app.config.backend, BACKEND_LABELS[BACKEND_AUTO])
         )
@@ -936,6 +972,28 @@ class SettingsDialog:
         profile_selector.grid(row=row, column=1, sticky="w", pady=2)
         profile_selector.bind("<<ComboboxSelected>>", lambda _event: self.update_profile_choice())
 
+        row += 1
+        ttk.Label(info, text="Hugging Face", style="Header.TLabel").grid(row=row, column=0, sticky="w", pady=2)
+        hf_row = ttk.Frame(info, style="Surface.TFrame")
+        hf_row.grid(row=row, column=1, sticky="ew", pady=2)
+        ttk.Checkbutton(
+            hf_row,
+            text="Telechargement rapide Xet",
+            variable=self.hf_fast_var,
+            command=self.update_hf_fast_choice,
+        ).pack(side=LEFT, padx=(0, 8))
+        ttk.Button(hf_row, text="Creer token", command=self.open_hf_token_page).pack(side=LEFT, padx=(0, 6))
+
+        row += 1
+        ttk.Label(info, text="HF token", style="Header.TLabel").grid(row=row, column=0, sticky="w", pady=2)
+        token_row = ttk.Frame(info, style="Surface.TFrame")
+        token_row.grid(row=row, column=1, sticky="ew", pady=2)
+        token_row.columnconfigure(0, weight=1)
+        self.hf_token_entry = ttk.Entry(token_row, textvariable=self.hf_token_var, show="*", width=38)
+        self.hf_token_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(token_row, text="Enregistrer", command=self.save_hf_token).grid(row=0, column=1, padx=(0, 6))
+        ttk.Button(token_row, text="Effacer", command=self.clear_hf_token).grid(row=0, column=2)
+
         status = ttk.Frame(self.window, style="Surface.TFrame", padding=(16, 6))
         status.grid(row=2, column=0, sticky="ew")
         status.columnconfigure(1, weight=1)
@@ -949,6 +1007,7 @@ class SettingsDialog:
             ("MLX Mac", self.mlx_var),
             ("whisper.cpp", self.whisper_cpp_var),
             ("Modele moteur", self.model_var),
+            ("HF rapide", self.hf_status_var),
         ]
         for row, (label, variable) in enumerate(status_rows):
             ttk.Label(status, text=label, style="Header.TLabel").grid(row=row, column=0, sticky="w", pady=3)
@@ -964,6 +1023,8 @@ class SettingsDialog:
         self.backend_button.pack(fill="x", pady=(0, 7))
         self.model_button = ttk.Button(actions, text="Telecharger modele moteur", command=self.install_model)
         self.model_button.pack(fill="x", pady=(0, 7))
+        self.batch_button = ttk.Button(actions, text="Packages / modeles", command=self.open_batch_downloads)
+        self.batch_button.pack(fill="x", pady=(0, 7))
         self.benchmark_button = ttk.Button(actions, text="Tester performances", command=self.run_benchmark)
         self.benchmark_button.pack(fill="x", pady=(0, 7))
         self.refresh_button = ttk.Button(actions, text="Reverifier", command=self.refresh)
@@ -1000,6 +1061,7 @@ class SettingsDialog:
         self.backend_choice.set(BACKEND_LABELS.get(self.app.config.backend, BACKEND_LABELS[BACKEND_AUTO]))
         self.model_choice.set(self.app.config.model_size)
         self.profile_choice.set(PROFILE_LABELS.get(self.app.config.transcription_profile, PROFILE_LABELS[PROFILE_FAST]))
+        self.hf_fast_var.set(self.app.config.hf_fast_download)
         active_parts = [f"{report.backend_label} ({report.device}, {report.compute_type})"]
         if report.backend_id == "faster-whisper":
             active_parts.append(f"{report.cpu_threads} threads")
@@ -1016,6 +1078,9 @@ class SettingsDialog:
         self.mlx_var.set("OK" if backend_health(self.app.config, "mlx-whisper").dependency_ok else "Manquant ou incompatible")
         self.whisper_cpp_var.set("OK" if backend_health(self.app.config, "whisper.cpp").dependency_ok else "Binaire introuvable")
         self.model_var.set(f"Local : {local_model}" if local_model else "Absent - telechargement requis")
+        token_status = "token present" if self.app.config.hf_token.strip() else "sans token"
+        fast_status = "Xet rapide actif" if self.app.config.hf_fast_download else "standard"
+        self.hf_status_var.set(f"{fast_status} | {token_status} | concurrence {self.app.config.hf_xet_concurrency}")
         self.backend_button.configure(text=f"Installer {selected_health.label}")
         self.model_button.configure(text=f"Telecharger modele {selected_health.label}")
         if report.messages:
@@ -1086,6 +1151,50 @@ class SettingsDialog:
         self.app._refresh_environment_labels()
         self.log(f"Profil selectionne : {selected_label}")
         self.refresh()
+
+    def update_hf_fast_choice(self) -> None:
+        fast = bool(self.hf_fast_var.get())
+        self.app.config = replace(
+            self.app.config,
+            hf_fast_download=fast,
+            disable_hf_xet=not fast,
+        )
+        self.app.config.save_user_settings()
+        self.app.pipeline.config = self.app.config
+        self.log("Mode Hugging Face rapide active." if fast else "Mode Hugging Face standard active.")
+        self.refresh()
+
+    def open_hf_token_page(self) -> None:
+        webbrowser.open(HF_TOKEN_URL)
+        self.log("Page officielle Hugging Face ouverte pour creer un token read.")
+
+    def save_hf_token(self) -> None:
+        token = self.hf_token_var.get().strip()
+        self.app.config = replace(self.app.config, hf_token=token)
+        self.app.config.save_user_settings()
+        self.app.pipeline.config = self.app.config
+        if token:
+            self.log("Token Hugging Face enregistre localement dans settings.json.")
+            self.status_var.set("Token Hugging Face enregistre localement.")
+        else:
+            self.log("Token Hugging Face vide.")
+            self.status_var.set("Aucun token Hugging Face configure.")
+        self.refresh()
+
+    def clear_hf_token(self) -> None:
+        self.hf_token_var.set("")
+        self.app.config = replace(self.app.config, hf_token="")
+        self.app.config.save_user_settings()
+        self.app.pipeline.config = self.app.config
+        self.log("Token Hugging Face efface des reglages locaux.")
+        self.status_var.set("Token Hugging Face efface.")
+        self.refresh()
+
+    def open_batch_downloads(self) -> None:
+        if self.app.installing_dependency:
+            messagebox.showinfo("Operation en cours", "Une operation est deja en cours.", parent=self.window)
+            return
+        BatchDownloadDialog(self)
 
     def install_ffmpeg(self) -> None:
         try:
@@ -1293,6 +1402,7 @@ class SettingsDialog:
         self.ffmpeg_button.configure(state=state)
         self.backend_button.configure(state=state)
         self.model_button.configure(state=state)
+        self.batch_button.configure(state=state)
         self.benchmark_button.configure(state=state)
         self.refresh_button.configure(state=state)
         self.cancel_button.configure(state="normal" if state == "disabled" else "disabled")
@@ -1308,6 +1418,240 @@ class SettingsDialog:
             self.progress_running = False
 
     def log(self, message: str) -> None:
+        self.log_text.configure(state="normal")
+        self.log_text.insert(END, message + "\n")
+        self.log_text.see(END)
+        self.log_text.configure(state="disabled")
+
+
+class BatchDownloadDialog:
+    def __init__(self, settings: SettingsDialog):
+        self.settings = settings
+        self.app = settings.app
+        self.window = tk.Toplevel(settings.window)
+        self.window.title("Packages et modeles")
+        self.window.geometry("880x560")
+        self.window.minsize(760, 480)
+        self.window.transient(settings.window)
+        self.window.configure(bg="#ffffff")
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
+        self.cancel_token: CancellationToken | None = None
+        self.running = False
+        self.items = self._build_items()
+        self.item_by_tree_id: dict[str, DownloadItem] = {}
+
+        self.status_var = tk.StringVar(value="Selectionnez un ou plusieurs elements.")
+        self._build()
+        self.refresh()
+
+    def _build(self) -> None:
+        self.window.columnconfigure(0, weight=1)
+        self.window.rowconfigure(1, weight=1)
+
+        header = ttk.Frame(self.window, style="Surface.TFrame", padding=(16, 12))
+        header.grid(row=0, column=0, sticky="ew")
+        ttk.Label(
+            header,
+            text="Telecharger packages et modeles",
+            style="Header.TLabel",
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(
+            header,
+            text="Les elements selectionnes sont traites un par un. Les modeles utilisent Hugging Face avec les reglages HF des Parametres.",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(4, 0))
+
+        body = ttk.Frame(self.window, style="Surface.TFrame", padding=(16, 8))
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        self.tree = ttk.Treeview(
+            body,
+            columns=("type", "status"),
+            show="tree headings",
+            selectmode="extended",
+        )
+        self.tree.heading("#0", text="Element")
+        self.tree.heading("type", text="Type")
+        self.tree.heading("status", text="Statut")
+        self.tree.column("#0", width=420, minwidth=280)
+        self.tree.column("type", width=120, minwidth=90)
+        self.tree.column("status", width=220, minwidth=160)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(body, orient=VERTICAL, command=self.tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=scrollbar.set)
+
+        log_frame = ttk.Frame(self.window, style="Surface.TFrame", padding=(16, 8))
+        log_frame.grid(row=2, column=0, sticky="nsew")
+        log_frame.columnconfigure(0, weight=1)
+        ttk.Label(log_frame, text="Journal", style="Header.TLabel", font=("Segoe UI", 10, "bold")).grid(
+            row=0, column=0, sticky="w", pady=(0, 6)
+        )
+        self.log_text = tk.Text(log_frame, height=7, wrap="word", font=("Consolas", 9), relief="solid", bd=1, padx=10, pady=8)
+        self.log_text.grid(row=1, column=0, sticky="ew")
+
+        footer = ttk.Frame(self.window, style="Surface.TFrame", padding=(16, 10))
+        footer.grid(row=3, column=0, sticky="ew")
+        footer.columnconfigure(0, weight=1)
+        ttk.Label(footer, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        self.progress = ttk.Progressbar(footer, mode="indeterminate", length=170)
+        self.progress.grid(row=0, column=1, padx=10)
+        self.download_button = ttk.Button(footer, text="Telecharger selection", command=self.start_selected)
+        self.download_button.grid(row=0, column=2, padx=(0, 8))
+        self.cancel_button = ttk.Button(footer, text="Annuler", command=self.cancel, state="disabled")
+        self.cancel_button.grid(row=0, column=3, padx=(0, 8))
+        ttk.Button(footer, text="Fermer", command=self.close).grid(row=0, column=4)
+
+    def _build_items(self) -> list[DownloadItem]:
+        package_items = [
+            DownloadItem("package:hf", "Accelerateur Hugging Face (huggingface_hub + hf-xet)", "package"),
+            DownloadItem("package:ffmpeg", "FFmpeg / ffprobe", "package"),
+            DownloadItem("package:faster-whisper", "Moteur faster-whisper", "package", backend=BACKEND_FASTER_WHISPER),
+            DownloadItem("package:mlx-whisper", "Moteur MLX Mac", "package", backend=BACKEND_MLX_WHISPER),
+            DownloadItem("package:whisper.cpp", "Moteur whisper.cpp", "package", backend=BACKEND_WHISPER_CPP),
+        ]
+        model_items = [
+            DownloadItem(
+                f"model:{backend}:{model_size}",
+                f"{BACKEND_LABELS.get(backend, backend)} / {model_size}",
+                "model",
+                backend=backend,
+                model_size=model_size,
+            )
+            for backend in (BACKEND_FASTER_WHISPER, BACKEND_MLX_WHISPER, BACKEND_WHISPER_CPP)
+            for model_size in MODEL_CHOICES
+        ]
+        return package_items + model_items
+
+    def refresh(self) -> None:
+        self.tree.delete(*self.tree.get_children())
+        self.item_by_tree_id.clear()
+        for item in self.items:
+            tree_id = self.tree.insert("", "end", text=item.label, values=(self._kind_label(item), self._status(item)))
+            self.item_by_tree_id[tree_id] = item
+
+    def _kind_label(self, item: DownloadItem) -> str:
+        return "Package" if item.kind == "package" else "Modele"
+
+    def _status(self, item: DownloadItem) -> str:
+        if item.kind == "package":
+            if item.key == "package:hf":
+                hub = importlib.util.find_spec("huggingface_hub") is not None
+                xet = importlib.util.find_spec("hf_xet") is not None
+                return "OK" if hub and xet else "A installer"
+            if item.key == "package:ffmpeg":
+                return "OK" if shutil.which("ffmpeg") and shutil.which("ffprobe") else "A installer"
+            if item.backend:
+                return "OK" if backend_health(self.app.config, item.backend).dependency_ok else "A installer"
+            return "-"
+
+        config = replace(self.app.config, backend=item.backend, model_size=item.model_size)
+        health = backend_health(config, item.backend)
+        if health.model_local:
+            return f"Local : {health.model_path}"
+        if not health.dependency_ok:
+            return "Moteur manquant"
+        return "A telecharger"
+
+    def start_selected(self) -> None:
+        if self.running or self.app.installing_dependency:
+            messagebox.showinfo("Operation en cours", "Une operation est deja en cours.", parent=self.window)
+            return
+
+        selected = [self.item_by_tree_id[item_id] for item_id in self.tree.selection() if item_id in self.item_by_tree_id]
+        if not selected:
+            self.status_var.set("Selectionnez au moins un element.")
+            return
+
+        selected.sort(key=lambda item: 0 if item.kind == "package" else 1)
+        self.running = True
+        self.app.installing_dependency = True
+        self.cancel_token = CancellationToken()
+        self.download_button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
+        self.progress.start(12)
+        self.status_var.set(f"Telechargement de {len(selected)} element(s)...")
+        thread = threading.Thread(target=self._run_items, args=(selected,), daemon=True)
+        thread.start()
+
+    def _run_items(self, items: list[DownloadItem]) -> None:
+        try:
+            for item in items:
+                if self.cancel_token:
+                    self.cancel_token.raise_if_cancelled()
+                self._log(f"--- {item.label} ---")
+                if item.kind == "package":
+                    self._install_package(item)
+                else:
+                    self._download_model(item)
+            self.window.after(0, self._finished, True, "", False)
+        except OperationCancelledError as exc:
+            self.window.after(0, self._finished, False, str(exc), True)
+        except Exception as exc:
+            self.window.after(0, self._finished, False, str(exc), False)
+
+    def _install_package(self, item: DownloadItem) -> None:
+        if item.key == "package:hf":
+            plan = hf_acceleration_plan()
+        elif item.key == "package:ffmpeg":
+            plan = ffmpeg_plan()
+        elif item.backend:
+            plan = backend_install_plan(item.backend, Path(__file__).resolve().parent.parent)
+        else:
+            raise RuntimeError(f"Package inconnu : {item.label}")
+        run_install_plan(plan, logger=self._thread_log, cancel_token=self.cancel_token)
+
+    def _download_model(self, item: DownloadItem) -> None:
+        config = replace(self.app.config, backend=item.backend, model_size=item.model_size)
+        config.ensure_directories()
+        health = backend_health(config, item.backend)
+        if not health.dependency_ok:
+            self._thread_log(f"Ignore : moteur manquant pour {item.label}.")
+            return
+        if health.model_local:
+            self._thread_log(f"Deja disponible : {health.model_path}")
+            return
+        download_model(config, backend=item.backend, logger=self._thread_log, cancel_token=self.cancel_token)
+
+    def cancel(self) -> None:
+        if self.cancel_token:
+            self.cancel_token.cancel()
+            self.status_var.set("Annulation demandee...")
+            self._log("Annulation demandee par l'utilisateur.")
+
+    def _finished(self, ok: bool, error: str, cancelled: bool) -> None:
+        self.running = False
+        self.app.installing_dependency = False
+        self.cancel_token = None
+        self.progress.stop()
+        self.download_button.configure(state="normal")
+        self.cancel_button.configure(state="disabled")
+        self.refresh()
+        self.settings.refresh()
+        if ok:
+            self.status_var.set("Telechargements termines.")
+            self._log("Lot termine.")
+        elif cancelled:
+            self.status_var.set("Telechargements annules.")
+            self._log("Lot annule.")
+        else:
+            self.status_var.set("Erreur pendant le lot.")
+            self._log(f"Erreur : {error}")
+            messagebox.showerror("Packages et modeles", error, parent=self.window)
+
+    def close(self) -> None:
+        if self.running:
+            messagebox.showinfo("Operation en cours", "Annulez ou attendez la fin avant de fermer.", parent=self.window)
+            return
+        self.window.destroy()
+
+    def _thread_log(self, message: str) -> None:
+        self.window.after(0, self._log, message)
+
+    def _log(self, message: str) -> None:
         self.log_text.configure(state="normal")
         self.log_text.insert(END, message + "\n")
         self.log_text.see(END)

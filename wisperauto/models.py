@@ -1,4 +1,4 @@
-"""Local faster-whisper model management."""
+"""Local transcription model management."""
 
 from __future__ import annotations
 
@@ -115,10 +115,10 @@ def ensure_faster_whisper_model_available(config: AppConfig, logger: ModelLogger
 
 
 MLX_MODEL_REPOS = {
-    "small": "mlx-community/whisper-small",
-    "medium": "mlx-community/whisper-medium",
+    "small": "mlx-community/whisper-small-mlx",
+    "medium": "mlx-community/whisper-medium-mlx",
     "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
-    "large-v3": "mlx-community/whisper-large-v3",
+    "large-v3": "mlx-community/whisper-large-v3-mlx",
 }
 
 
@@ -142,13 +142,23 @@ def ensure_mlx_model_available(config: AppConfig, logger: ModelLogger | None = N
 
     target_dir = config.backend_model_dir(BACKEND_MLX_WHISPER)
     target_dir.mkdir(parents=True, exist_ok=True)
-    logger(f"Telechargement du modele MLX {repo_id}.")
+    logger(f"Telechargement du modele MLX {config.model_size}.")
+    logger(f"Depot Hugging Face : {repo_id}")
     logger(f"Dossier cible : {target_dir}")
-    downloaded = snapshot_download(
-        repo_id=repo_id,
-        local_dir=str(target_dir),
-        local_files_only=False,
-    )
+    try:
+        downloaded = snapshot_download(
+            repo_id=repo_id,
+            local_dir=str(target_dir),
+            local_files_only=False,
+        )
+    except Exception as exc:
+        if exc.__class__.__name__ == "RepositoryNotFoundError":
+            raise RuntimeError(
+                "Depot Hugging Face MLX introuvable ou inaccessible : "
+                f"{repo_id}. Verifiez le modele choisi, le token Hugging Face, "
+                "ou choisissez large-v3-turbo pour le backend MLX."
+            ) from exc
+        raise
     resolved = Path(downloaded)
     if looks_like_backend_model(resolved, BACKEND_MLX_WHISPER):
         config.remember_model_path(resolved, BACKEND_MLX_WHISPER)

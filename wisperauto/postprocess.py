@@ -160,6 +160,7 @@ class PostProcessor:
         self.actions: list[str] = []
 
     def build_outputs(self, raw_text: str) -> PostProcessResult:
+        self.actions = []
         raw = raw_text.strip() + ("\n" if raw_text.strip() else "")
         cleaned = self.process(raw_text, smart=False)
         smart = self.process(raw_text, smart=True)
@@ -171,7 +172,7 @@ class PostProcessor:
                 MODE_SMART: smart,
                 MODE_REPORT: report,
             },
-            actions=self.actions,
+            actions=list(self.actions),
         )
 
     def process(self, raw_text: str, smart: bool) -> str:
@@ -210,7 +211,7 @@ class PostProcessor:
                 self.actions.append("Nettoyage leger de la phrase precedente.")
                 continue
 
-            replacement = self._replacement_command(normalized, output)
+            replacement = self._replacement_command(line, normalized, output)
             if replacement is not None:
                 output = replacement
                 continue
@@ -321,14 +322,16 @@ class PostProcessor:
                     return parts[1].strip()
         return "" if normalized in markers else line
 
-    def _replacement_command(self, normalized_line: str, output: str) -> str | None:
+    def _replacement_command(self, line: str, normalized_line: str, output: str) -> str | None:
         match = re.match(r"remplace\s+(.+?)\s+par\s+(.+)$", normalized_line)
         if match:
             old, new = match.groups()
-            if old in normalize_text(output):
-                pattern = re.compile(re.escape(old), re.IGNORECASE)
+            original_match = re.match(r"remplace\s+(.+?)\s+par\s+(.+)$", line, flags=re.IGNORECASE)
+            replacement = original_match.group(2).strip() if original_match else new
+            updated = self._replace_first_normalized(output, old, replacement)
+            if updated != output:
                 self.actions.append("Remplacement dicte applique.")
-                return pattern.sub(new, output, count=1)
+                return updated
             self.actions.append("Remplacement dicte ignore : texte introuvable.")
             return output
 
@@ -338,8 +341,27 @@ class PostProcessor:
             base = remove_last_sentence(output)
             if base and not base.endswith((" ", "\n")):
                 base += " "
-            return base + match.group(1)
+            original_match = re.match(r"non\s*,?\s+je voulais dire\s+(.+)$", line, flags=re.IGNORECASE)
+            replacement = original_match.group(1).strip() if original_match else match.group(1)
+            return base + replacement
         return None
+
+    @staticmethod
+    def _replace_first_normalized(text: str, old_normalized: str, replacement: str) -> str:
+        target = normalize_text(old_normalized)
+        target_parts = target.split()
+        if not target_parts:
+            return text
+
+        tokens = list(re.finditer(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9'’_-]+", text))
+        size = len(target_parts)
+        for start_index in range(0, len(tokens) - size + 1):
+            start = tokens[start_index].start()
+            end = tokens[start_index + size - 1].end()
+            candidate = text[start:end]
+            if normalize_text(candidate) == target:
+                return text[:start] + replacement + text[end:]
+        return text
 
     def _extract_numbered_item(self, line: str) -> tuple[int, str] | None:
         normalized = normalize_text(line)

@@ -9,6 +9,7 @@ import time
 import queue
 import threading
 import platform
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -68,6 +69,16 @@ def faster_whisper_plan(project_root: Path) -> InstallPlan:
             install_command,
         ],
         note="Installe la dependance Python dans l'environnement qui lance WisperAuto.",
+    )
+
+
+def hf_acceleration_plan() -> InstallPlan:
+    return InstallPlan(
+        name="Accelerateur Hugging Face",
+        commands=[
+            [sys.executable, "-m", "pip", "install", "--upgrade", "huggingface_hub", "hf-xet"],
+        ],
+        note="Installe hf-xet pour les telechargements Hugging Face rapides.",
     )
 
 
@@ -185,6 +196,7 @@ def run_streamed_command(
     timeout_seconds: int | None = None,
     cancel_token: CancellationToken | None = None,
     runner=None,
+    env: dict[str, str] | None = None,
 ) -> None:
     logger("$ " + " ".join(command))
     if cancel_token:
@@ -209,6 +221,7 @@ def run_streamed_command(
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            env=env,
         )
         assert process.stdout is not None
 
@@ -301,6 +314,19 @@ def download_model(
     if cancel_token:
         cancel_token.raise_if_cancelled()
     logger("Preparation du telechargement du modele.")
+    env = os.environ.copy()
+    if config.hf_token.strip():
+        env["HF_TOKEN"] = config.hf_token.strip()
+        logger("Token Hugging Face detecte : il sera transmis au telechargement.")
+    if config.hf_fast_download:
+        env.pop("HF_HUB_DISABLE_XET", None)
+        env["HF_XET_HIGH_PERFORMANCE"] = "1"
+        env["HF_XET_NUM_CONCURRENT_RANGE_GETS"] = str(max(1, config.hf_xet_concurrency))
+        env.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
+        logger(
+            "Mode Hugging Face rapide active : Xet haute performance, "
+            f"{env['HF_XET_NUM_CONCURRENT_RANGE_GETS']} connexions concurrentes."
+        )
     command = [
         sys.executable,
         "-m",
@@ -316,11 +342,15 @@ def download_model(
         "--backend",
         backend,
     ]
-    if config.disable_hf_xet:
+    if config.hf_fast_download:
+        command.append("--hf-fast-download")
+        command.extend(["--hf-xet-concurrency", str(max(1, config.hf_xet_concurrency))])
+    elif config.disable_hf_xet:
         command.append("--disable-hf-xet")
     kwargs = {
         "logger": logger,
         "timeout_seconds": config.model_download_timeout_minutes * 60,
+        "env": env,
     }
     if cancel_token is not None:
         kwargs["cancel_token"] = cancel_token

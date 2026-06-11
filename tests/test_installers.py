@@ -12,6 +12,7 @@ from wisperauto.installers import (
     download_model,
     faster_whisper_plan,
     ffmpeg_plan,
+    hf_acceleration_plan,
     run_install_plan,
 )
 
@@ -27,6 +28,13 @@ class InstallersTest(unittest.TestCase):
         self.assertEqual(plan.name, "faster-whisper")
         self.assertEqual(plan.commands[0][1:4], ["-m", "pip", "install"])
         self.assertTrue(str(plan.commands[1][-1]).endswith("requirements.txt"))
+
+    def test_hf_acceleration_plan_installs_hub_and_xet(self):
+        plan = hf_acceleration_plan()
+
+        self.assertEqual(plan.name, "Accelerateur Hugging Face")
+        self.assertIn("huggingface_hub", plan.commands[0])
+        self.assertIn("hf-xet", plan.commands[0])
 
     def test_windows_ffmpeg_plan_prefers_winget(self):
         with patch("wisperauto.installers.sys.platform", "win32"):
@@ -60,8 +68,8 @@ class InstallersTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = AppConfig(home=Path(tmpdir))
 
-            def fake_run_streamed_command(command, logger, timeout_seconds=None, runner=None):
-                del command, logger, timeout_seconds, runner
+            def fake_run_streamed_command(command, logger, timeout_seconds=None, runner=None, env=None):
+                del command, logger, timeout_seconds, runner, env
                 target = config.model_dir / "snapshots" / "abc"
                 target.mkdir(parents=True, exist_ok=True)
                 (target / "model.bin").write_bytes(b"model")
@@ -71,6 +79,33 @@ class InstallersTest(unittest.TestCase):
 
             self.assertEqual(model_path, config.model_dir / "snapshots" / "abc")
             self.assertEqual(config.local_model_path(), config.model_dir / "snapshots" / "abc")
+
+    def test_download_model_fast_hf_uses_env_without_exposing_token_in_command(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = AppConfig(
+                home=Path(tmpdir),
+                hf_token="hf_secret",
+                hf_fast_download=True,
+                hf_xet_concurrency=40,
+            )
+            captured = {}
+
+            def fake_run_streamed_command(command, logger, timeout_seconds=None, runner=None, env=None):
+                del logger, timeout_seconds, runner
+                captured["command"] = command
+                captured["env"] = env or {}
+                target = config.model_dir / "snapshots" / "abc"
+                target.mkdir(parents=True, exist_ok=True)
+                (target / "model.bin").write_bytes(b"model")
+
+            with patch("wisperauto.installers.run_streamed_command", fake_run_streamed_command):
+                download_model(config, logger=lambda _message: None)
+
+            self.assertNotIn("hf_secret", " ".join(captured["command"]))
+            self.assertEqual(captured["env"].get("HF_TOKEN"), "hf_secret")
+            self.assertEqual(captured["env"].get("HF_XET_HIGH_PERFORMANCE"), "1")
+            self.assertEqual(captured["env"].get("HF_XET_NUM_CONCURRENT_RANGE_GETS"), "40")
+            self.assertIn("--hf-fast-download", captured["command"])
 
     def test_backend_install_plan_routes_to_mlx_on_apple_silicon(self):
         with patch("wisperauto.installers.sys.platform", "darwin"):
