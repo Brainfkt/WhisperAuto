@@ -10,9 +10,11 @@ from wisperauto.installers import (
     InstallUnavailableError,
     backend_install_plan,
     download_model,
+    download_postprocess_model,
     faster_whisper_plan,
     ffmpeg_plan,
     hf_acceleration_plan,
+    llama_cpp_python_plan,
     run_install_plan,
 )
 
@@ -35,6 +37,12 @@ class InstallersTest(unittest.TestCase):
         self.assertEqual(plan.name, "Accelerateur Hugging Face")
         self.assertIn("huggingface_hub", plan.commands[0])
         self.assertIn("hf-xet", plan.commands[0])
+
+    def test_llama_cpp_python_plan_installs_llm_postprocess_runtime(self):
+        plan = llama_cpp_python_plan()
+
+        self.assertEqual(plan.name, "Post-traitement LLM local")
+        self.assertIn("llama-cpp-python>=0.3,<1.0", plan.commands[0])
 
     def test_windows_ffmpeg_plan_prefers_winget(self):
         with patch("wisperauto.installers.sys.platform", "win32"):
@@ -106,6 +114,33 @@ class InstallersTest(unittest.TestCase):
             self.assertEqual(captured["env"].get("HF_XET_HIGH_PERFORMANCE"), "1")
             self.assertEqual(captured["env"].get("HF_XET_NUM_CONCURRENT_RANGE_GETS"), "40")
             self.assertIn("--hf-fast-download", captured["command"])
+
+    def test_download_postprocess_model_uses_env_and_local_target(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = AppConfig(
+                home=Path(tmpdir),
+                hf_token="hf_secret",
+                hf_fast_download=True,
+                hf_xet_concurrency=12,
+            )
+            captured = {}
+
+            def fake_run_streamed_command(command, logger, timeout_seconds=None, runner=None, env=None):
+                del logger, timeout_seconds, runner
+                captured["command"] = command
+                captured["env"] = env or {}
+                target = config.postprocess_models_dir / config.postprocess_model_file
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"gguf")
+
+            with patch("wisperauto.installers.run_streamed_command", fake_run_streamed_command):
+                model_path = download_postprocess_model(config, logger=lambda _message: None)
+
+            self.assertEqual(model_path, config.postprocess_models_dir / config.postprocess_model_file)
+            self.assertNotIn("hf_secret", " ".join(captured["command"]))
+            self.assertIn("wisperauto.postprocess_model_download", captured["command"])
+            self.assertEqual(captured["env"].get("HF_TOKEN"), "hf_secret")
+            self.assertEqual(captured["env"].get("HF_XET_NUM_CONCURRENT_RANGE_GETS"), "12")
 
     def test_backend_install_plan_routes_to_mlx_on_apple_silicon(self):
         with patch("wisperauto.installers.sys.platform", "darwin"):

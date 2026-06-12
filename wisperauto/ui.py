@@ -25,6 +25,7 @@ from .config import (
     BACKEND_FASTER_WHISPER,
     BACKEND_MLX_WHISPER,
     BACKEND_WHISPER_CPP,
+    POSTPROCESS_LLM_DIRECT,
     PROFILE_BALANCED,
     PROFILE_FAST,
     PROFILE_PRECISE,
@@ -37,8 +38,10 @@ from .installers import (
     InstallUnavailableError,
     backend_install_plan,
     download_model,
+    download_postprocess_model,
     ffmpeg_plan,
     hf_acceleration_plan,
+    llama_cpp_python_plan,
     run_install_plan,
 )
 from .jobs import (
@@ -47,6 +50,7 @@ from .jobs import (
     STATUS_DONE,
     STATUS_ERROR,
     STATUS_IN_PROGRESS,
+    STATUS_POSTPROCESSING,
     STATUS_QUEUED,
     STATUS_READY,
     STATUS_TRANSCRIBING,
@@ -55,10 +59,10 @@ from .jobs import (
     recover_interrupted_records,
 )
 from .pipeline import TranscriptionPipeline, check_environment, format_eta
-from .postprocess import MODE_LABELS, MODE_RAW, MODE_CLEANED, MODE_SMART, MODE_REPORT
+from .postprocess import MODE_LABELS, MODE_RAW, MODE_SMART, MODE_REPORT
 
 
-MODE_ORDER = (MODE_RAW, MODE_CLEANED, MODE_SMART, MODE_REPORT)
+MODE_ORDER = (MODE_RAW, MODE_SMART, MODE_REPORT)
 MODE_BY_LABEL = {label: mode for mode, label in MODE_LABELS.items()}
 MODEL_CHOICES = ("small", "medium", "large-v3-turbo", "large-v3")
 PROFILE_LABELS = {
@@ -68,6 +72,10 @@ PROFILE_LABELS = {
 }
 PROFILE_BY_LABEL = {label: profile for profile, label in PROFILE_LABELS.items()}
 BACKEND_BY_LABEL = {label: backend for backend, label in BACKEND_LABELS.items()}
+POSTPROCESS_LABELS = {
+    POSTPROCESS_LLM_DIRECT: "LLM local intelligent",
+}
+POSTPROCESS_BY_LABEL = {label: engine for engine, label in POSTPROCESS_LABELS.items()}
 RETRYABLE_STATUSES = {STATUS_READY, STATUS_CANCELLED, STATUS_ERROR}
 RUNNING_STATUSES = STATUS_IN_PROGRESS
 HF_TOKEN_URL = "https://huggingface.co/settings/tokens/new?tokenType=read"
@@ -112,8 +120,8 @@ class WisperAutoApp:
 
     def _configure_window(self) -> None:
         self.root.title(APP_NAME)
-        self.root.geometry("1120x700")
-        self.root.minsize(940, 580)
+        self.root.geometry("1180x740")
+        self.root.minsize(860, 560)
         self.root.configure(bg="#f3f4f6")
 
     def _build_styles(self) -> None:
@@ -143,12 +151,12 @@ class WisperAutoApp:
 
         header = ttk.Frame(self.root, style="Surface.TFrame", padding=(16, 10))
         header.grid(row=0, column=0, sticky="ew")
-        header.columnconfigure(3, weight=1)
+        header.columnconfigure(2, weight=1)
 
         ttk.Label(header, text=APP_NAME, style="Title.TLabel").grid(row=0, column=0, padx=(0, 18))
         self.privacy_label = ttk.Label(
             header,
-            text="Local",
+            text="Traitement local",
             style="Status.TLabel",
             foreground="#15803d",
         )
@@ -157,10 +165,7 @@ class WisperAutoApp:
         self.model_label.grid(row=0, column=2, sticky="w")
 
         actions = ttk.Frame(header, style="Surface.TFrame")
-        actions.grid(row=0, column=4, sticky="e")
-        ttk.Button(actions, text="Ajouter fichiers", style="Primary.TButton", command=self._import_audio).pack(
-            side=LEFT, padx=(0, 8)
-        )
+        actions.grid(row=0, column=3, sticky="e")
         ttk.Button(actions, text="Parametres", command=self._show_settings).pack(side=LEFT)
 
         body = ttk.PanedWindow(self.root, orient="horizontal")
@@ -190,14 +195,15 @@ class WisperAutoApp:
 
         buttons = ttk.Frame(parent, style="Surface.TFrame")
         buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 8))
+        ttk.Button(buttons, text="Ajouter", command=self._import_audio).pack(side=LEFT, padx=(0, 6))
         self.transcribe_selected_button = ttk.Button(
             buttons,
-            text="Transcrire selection",
+            text="Transcrire",
             style="Primary.TButton",
             command=self._transcribe_selected,
         )
         self.transcribe_selected_button.pack(side=LEFT, padx=(0, 6))
-        ttk.Button(buttons, text="Tout transcrire", command=self._transcribe_all).pack(side=LEFT, padx=(0, 6))
+        ttk.Button(buttons, text="Tout", command=self._transcribe_all).pack(side=LEFT, padx=(0, 6))
         self.cancel_button = ttk.Button(buttons, text="Annuler", command=self._cancel_selected_or_active)
         self.cancel_button.pack(side=LEFT, padx=(0, 6))
         ttk.Button(buttons, text="Supprimer", command=self._delete_selected).pack(side=LEFT)
@@ -220,6 +226,7 @@ class WisperAutoApp:
         self.history.tag_configure(STATUS_QUEUED, foreground="#7c3aed")
         self.history.tag_configure(STATUS_CONVERTING, foreground="#0f766e")
         self.history.tag_configure(STATUS_TRANSCRIBING, foreground="#075ac9")
+        self.history.tag_configure(STATUS_POSTPROCESSING, foreground="#7c3aed")
         self.history.tag_configure(STATUS_DONE, foreground="#15803d")
         self.history.tag_configure(STATUS_ERROR, foreground="#dc2626")
         self.history.tag_configure(STATUS_CANCELLED, foreground="#92400e")
@@ -232,7 +239,7 @@ class WisperAutoApp:
 
     def _build_transcript_panel(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(2, weight=1)
+        parent.rowconfigure(3, weight=1)
 
         top_line = ttk.Frame(parent, style="Surface.TFrame")
         top_line.grid(row=0, column=0, sticky="ew")
@@ -245,8 +252,9 @@ class WisperAutoApp:
         )
         self.file_title.grid(row=0, column=0, sticky="w")
 
-        button_line = ttk.Frame(top_line, style="Surface.TFrame")
-        button_line.grid(row=0, column=1, sticky="e")
+        button_line = ttk.Frame(parent, style="Surface.TFrame")
+        button_line.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        button_line.columnconfigure(0, weight=1)
         self.mode_selector = ttk.Combobox(
             button_line,
             state="readonly",
@@ -254,17 +262,19 @@ class WisperAutoApp:
             textvariable=self.output_mode,
             values=tuple(MODE_LABELS[mode] for mode in MODE_ORDER),
         )
-        self.mode_selector.pack(side=LEFT, padx=(0, 6))
+        self.mode_selector.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.mode_selector.bind("<<ComboboxSelected>>", self._on_mode_change)
-        ttk.Button(button_line, text="Copier", command=self._copy_transcription).pack(side=LEFT, padx=(0, 6))
-        ttk.Button(button_line, text="Exporter", command=self._export_transcription).pack(side=LEFT, padx=(0, 6))
-        ttk.Button(button_line, text="Dossier", command=self._open_output_folder).pack(side=LEFT)
+        output_actions = ttk.Frame(button_line, style="Surface.TFrame")
+        output_actions.grid(row=0, column=1, sticky="e")
+        ttk.Button(output_actions, text="Copier", command=self._copy_transcription).pack(side=LEFT, padx=(0, 6))
+        ttk.Button(output_actions, text="Exporter", command=self._export_transcription).pack(side=LEFT, padx=(0, 6))
+        ttk.Button(output_actions, text="Dossier", command=self._open_output_folder).pack(side=LEFT)
 
         self.meta_label = ttk.Label(parent, text="", style="Muted.TLabel")
-        self.meta_label.grid(row=1, column=0, sticky="w", pady=(8, 8))
+        self.meta_label.grid(row=2, column=0, sticky="w", pady=(8, 8))
 
         text_frame = ttk.Frame(parent, style="Surface.TFrame")
-        text_frame.grid(row=2, column=0, sticky="nsew")
+        text_frame.grid(row=3, column=0, sticky="nsew")
         text_frame.columnconfigure(0, weight=1)
         text_frame.rowconfigure(0, weight=1)
         self.transcript_text = tk.Text(
@@ -288,31 +298,31 @@ class WisperAutoApp:
     def _build_footer(self) -> None:
         footer = ttk.Frame(self.root, style="Surface.TFrame", padding=(16, 10))
         footer.grid(row=2, column=0, sticky="ew")
-        footer.columnconfigure(1, weight=1)
-        footer.columnconfigure(3, weight=2)
+        footer.columnconfigure(0, weight=1)
 
-        ttk.Label(footer, text="Processus", style="Header.TLabel", font=("Segoe UI", 10, "bold")).grid(
-            row=0, column=0, sticky="w", padx=(0, 18)
-        )
-        self.process_label = ttk.Label(footer, text="Pret", style="Status.TLabel")
-        self.process_label.grid(row=1, column=0, sticky="w", padx=(0, 18))
+        status_line = ttk.Frame(footer, style="Surface.TFrame")
+        status_line.grid(row=0, column=0, sticky="ew")
+        status_line.columnconfigure(0, weight=1)
+        ttk.Label(
+            status_line,
+            text="Traitement en cours",
+            style="Header.TLabel",
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        self.process_label = ttk.Label(status_line, text="Pret", style="Status.TLabel")
+        self.process_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self.progress_value = ttk.Label(status_line, text="0%", style="Muted.TLabel")
+        self.progress_value.grid(row=1, column=1, sticky="e", pady=(2, 0))
 
-        ttk.Label(footer, text="Progression", style="Header.TLabel", font=("Segoe UI", 10, "bold")).grid(
-            row=0, column=1, sticky="w"
-        )
         progress_line = ttk.Frame(footer, style="Surface.TFrame")
-        progress_line.grid(row=1, column=1, sticky="ew", padx=(0, 24))
+        progress_line.grid(row=1, column=0, sticky="ew", pady=(8, 4))
         progress_line.columnconfigure(0, weight=1)
         self.progress = ttk.Progressbar(progress_line, mode="determinate", maximum=100)
-        self.progress.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        self.progress_value = ttk.Label(progress_line, text="0%", style="Muted.TLabel")
-        self.progress_value.grid(row=0, column=1)
+        self.progress.grid(row=0, column=0, sticky="ew")
+        self.progress_indeterminate = False
 
-        ttk.Label(footer, text="Message", style="Header.TLabel", font=("Segoe UI", 10, "bold")).grid(
-            row=0, column=3, sticky="w"
-        )
-        self.message_label = ttk.Label(footer, text="Aucun message.", style="Muted.TLabel", wraplength=520)
-        self.message_label.grid(row=1, column=3, sticky="w")
+        self.message_label = ttk.Label(footer, text="Aucun message.", style="Muted.TLabel", wraplength=900)
+        self.message_label.grid(row=2, column=0, sticky="ew")
 
     def _load_history(self) -> None:
         for record in recover_interrupted_records(self.store, self.store.latest()):
@@ -393,6 +403,8 @@ class WisperAutoApp:
             return "Erreur"
         if record.status == STATUS_CANCELLED:
             return "Annule"
+        if record.status == STATUS_POSTPROCESSING and record.progress:
+            return f"LLM {record.progress}%"
         if record.progress:
             return f"{record.progress}%"
         return "-"
@@ -417,14 +429,28 @@ class WisperAutoApp:
 
     def _set_progress(self, record: JobRecord) -> None:
         value = max(0, min(100, int(record.progress or 0)))
-        self.progress.configure(value=value)
+        indeterminate = (
+            record.status == STATUS_POSTPROCESSING
+            and record.eta_seconds is None
+            and value < 98
+        )
+        if indeterminate and not self.progress_indeterminate:
+            self.progress.configure(mode="indeterminate")
+            self.progress.start(12)
+            self.progress_indeterminate = True
+        elif not indeterminate and self.progress_indeterminate:
+            self.progress.stop()
+            self.progress.configure(mode="determinate")
+            self.progress_indeterminate = False
+        if not self.progress_indeterminate:
+            self.progress.configure(value=value)
         suffix = ""
         if record.eta_seconds is not None and record.status in RUNNING_STATUSES:
             suffix = f" | {format_eta(record.eta_seconds)}"
         elif record.progress_detail:
             detail = record.progress_detail
-            if len(detail) > 36:
-                detail = detail[:33].rstrip() + "..."
+            if len(detail) > 64:
+                detail = detail[:61].rstrip() + "..."
             suffix = f" | {detail}"
         self.progress_value.configure(text=f"{value}%{suffix}")
 
@@ -436,15 +462,20 @@ class WisperAutoApp:
 
     def _refresh_environment_labels(self) -> None:
         report = check_environment(self.config)
+        llm_ready = importlib.util.find_spec("llama_cpp") is not None and self.config.local_postprocess_model_path()
+        llm_label = "LLM pret" if llm_ready else "LLM a installer"
         if report.ok_for_local_run:
             self.model_label.configure(
                 text=(
                     f"{report.backend_label} | Modele {self.config.model_size} local | "
-                    f"{PROFILE_LABELS.get(self.config.transcription_profile, self.config.transcription_profile)}"
+                    f"{PROFILE_LABELS.get(self.config.transcription_profile, self.config.transcription_profile)} | "
+                    f"{llm_label}"
                 )
             )
         else:
-            self.model_label.configure(text=f"{report.backend_label} | {self.config.model_status_label(report.backend_id)}")
+            self.model_label.configure(
+                text=f"{report.backend_label} | {self.config.model_status_label(report.backend_id)} | {llm_label}"
+            )
 
     def _selected_record_id(self) -> str | None:
         selection = self.history.selection()
@@ -825,13 +856,17 @@ class WisperAutoApp:
         if not record:
             return None
         selected = MODE_BY_LABEL.get(self.output_mode.get(), self.output_mode.get())
-        path = record.outputs.get(selected) if record.outputs else ""
-        if not path:
+        if record.outputs:
+            path = record.outputs.get(selected, "")
+            if path:
+                return Path(path)
             if selected == MODE_RAW and record.raw_transcript_path:
-                path = record.raw_transcript_path
-            else:
-                path = record.transcript_path
-        return Path(path) if path else None
+                return Path(record.raw_transcript_path)
+            return None
+
+        if selected == MODE_RAW and record.raw_transcript_path:
+            return Path(record.raw_transcript_path)
+        return Path(record.transcript_path) if record.transcript_path else None
 
     def _read_record_output(self, record: JobRecord) -> str:
         path = self._record_output_path(record)
@@ -853,8 +888,8 @@ class SettingsDialog:
         self.app = app
         self.window = tk.Toplevel(app.root)
         self.window.title("Parametres et installation")
-        self.window.geometry("860x640")
-        self.window.minsize(760, 540)
+        self.window.geometry("900x660")
+        self.window.minsize(720, 520)
         self.window.transient(app.root)
         self.window.configure(bg="#ffffff")
         self.window.protocol("WM_DELETE_WINDOW", self.close)
@@ -868,6 +903,7 @@ class SettingsDialog:
         self.whisper_cpp_var = tk.StringVar()
         self.active_backend_var = tk.StringVar()
         self.model_var = tk.StringVar()
+        self.postprocess_status_var = tk.StringVar()
         self.hf_status_var = tk.StringVar()
         self.hf_token_var = tk.StringVar(value=app.config.hf_token)
         self.hf_fast_var = tk.BooleanVar(value=app.config.hf_fast_download)
@@ -877,6 +913,9 @@ class SettingsDialog:
         self.model_choice = tk.StringVar(value=app.config.model_size)
         self.profile_choice = tk.StringVar(
             value=PROFILE_LABELS.get(app.config.transcription_profile, PROFILE_LABELS[PROFILE_FAST])
+        )
+        self.postprocess_choice = tk.StringVar(
+            value=POSTPROCESS_LABELS.get(app.config.postprocess_engine, POSTPROCESS_LABELS[POSTPROCESS_LLM_DIRECT])
         )
         self.progress_running = False
         self.cancel_token: CancellationToken | None = None
@@ -907,7 +946,7 @@ class SettingsDialog:
 
     def _build(self) -> None:
         self.window.columnconfigure(0, weight=1)
-        self.window.rowconfigure(3, weight=1)
+        self.window.rowconfigure(1, weight=1)
 
         header = ttk.Frame(self.window, style="Surface.TFrame", padding=(16, 12))
         header.grid(row=0, column=0, sticky="ew")
@@ -923,9 +962,12 @@ class SettingsDialog:
             style="Muted.TLabel",
         ).pack(anchor="w", pady=(4, 0))
 
-        info = ttk.Frame(self.window, style="Surface.TFrame", padding=(16, 6))
-        info.grid(row=1, column=0, sticky="ew")
+        notebook = ttk.Notebook(self.window)
+        notebook.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 8))
+
+        info = ttk.Frame(notebook, style="Surface.TFrame", padding=(16, 12))
         info.columnconfigure(1, weight=1)
+        notebook.add(info, text="Moteur")
 
         rows = [
             ("Dossier", str(self.app.config.home)),
@@ -973,9 +1015,27 @@ class SettingsDialog:
         profile_selector.bind("<<ComboboxSelected>>", lambda _event: self.update_profile_choice())
 
         row += 1
-        ttk.Label(info, text="Hugging Face", style="Header.TLabel").grid(row=row, column=0, sticky="w", pady=2)
-        hf_row = ttk.Frame(info, style="Surface.TFrame")
-        hf_row.grid(row=row, column=1, sticky="ew", pady=2)
+        ttk.Label(info, text="Post-traitement", style="Header.TLabel").grid(row=row, column=0, sticky="w", pady=2)
+        postprocess_selector = ttk.Combobox(
+            info,
+            state="readonly",
+            width=24,
+            textvariable=self.postprocess_choice,
+            values=tuple(POSTPROCESS_LABELS.values()),
+        )
+        postprocess_selector.grid(row=row, column=1, sticky="w", pady=2)
+        postprocess_selector.bind("<<ComboboxSelected>>", lambda _event: self.update_postprocess_choice())
+
+        downloads = ttk.Frame(notebook, style="Surface.TFrame", padding=(16, 12))
+        downloads.columnconfigure(0, weight=1)
+        downloads.columnconfigure(1, weight=1)
+        notebook.add(downloads, text="Telechargements")
+
+        ttk.Label(downloads, text="Hugging Face", style="Header.TLabel", font=("Segoe UI", 11, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 8)
+        )
+        hf_row = ttk.Frame(downloads, style="Surface.TFrame")
+        hf_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=2)
         ttk.Checkbutton(
             hf_row,
             text="Telechargement rapide Xet",
@@ -984,19 +1044,50 @@ class SettingsDialog:
         ).pack(side=LEFT, padx=(0, 8))
         ttk.Button(hf_row, text="Creer token", command=self.open_hf_token_page).pack(side=LEFT, padx=(0, 6))
 
-        row += 1
-        ttk.Label(info, text="HF token", style="Header.TLabel").grid(row=row, column=0, sticky="w", pady=2)
-        token_row = ttk.Frame(info, style="Surface.TFrame")
-        token_row.grid(row=row, column=1, sticky="ew", pady=2)
+        ttk.Label(downloads, text="HF token", style="Header.TLabel").grid(row=2, column=0, sticky="w", pady=(12, 2))
+        token_row = ttk.Frame(downloads, style="Surface.TFrame")
+        token_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=2)
         token_row.columnconfigure(0, weight=1)
         self.hf_token_entry = ttk.Entry(token_row, textvariable=self.hf_token_var, show="*", width=38)
         self.hf_token_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         ttk.Button(token_row, text="Enregistrer", command=self.save_hf_token).grid(row=0, column=1, padx=(0, 6))
         ttk.Button(token_row, text="Effacer", command=self.clear_hf_token).grid(row=0, column=2)
 
-        status = ttk.Frame(self.window, style="Surface.TFrame", padding=(16, 6))
-        status.grid(row=2, column=0, sticky="ew")
+        ttk.Label(downloads, text="Actions locales", style="Header.TLabel", font=("Segoe UI", 11, "bold")).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(18, 8)
+        )
+        actions = ttk.Frame(downloads, style="Surface.TFrame")
+        actions.grid(row=5, column=0, columnspan=2, sticky="ew")
+        actions.columnconfigure(0, weight=1)
+        actions.columnconfigure(1, weight=1)
+        self.ffmpeg_button = ttk.Button(actions, text="Installer FFmpeg", command=self.install_ffmpeg)
+        self.ffmpeg_button.grid(row=0, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
+        self.backend_button = ttk.Button(actions, text="Installer moteur", command=self.install_selected_backend)
+        self.backend_button.grid(row=0, column=1, sticky="ew", pady=(0, 8))
+        self.model_button = ttk.Button(actions, text="Telecharger modele moteur", command=self.install_model)
+        self.model_button.grid(row=1, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
+        self.batch_button = ttk.Button(actions, text="Packages / modeles", command=self.open_batch_downloads)
+        self.batch_button.grid(row=1, column=1, sticky="ew", pady=(0, 8))
+        self.postprocess_runtime_button = ttk.Button(
+            actions,
+            text="Installer LLM local",
+            command=self.install_postprocess_runtime,
+        )
+        self.postprocess_runtime_button.grid(row=2, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
+        self.postprocess_model_button = ttk.Button(
+            actions,
+            text="Telecharger modele LLM",
+            command=self.install_postprocess_model,
+        )
+        self.postprocess_model_button.grid(row=2, column=1, sticky="ew", pady=(0, 8))
+        self.benchmark_button = ttk.Button(actions, text="Tester performances", command=self.run_benchmark)
+        self.benchmark_button.grid(row=3, column=0, sticky="ew", padx=(0, 8))
+        self.refresh_button = ttk.Button(actions, text="Reverifier", command=self.refresh)
+        self.refresh_button.grid(row=3, column=1, sticky="ew")
+
+        status = ttk.Frame(notebook, style="Surface.TFrame", padding=(16, 12))
         status.columnconfigure(1, weight=1)
+        notebook.add(status, text="Etat")
 
         status_rows = [
             ("Python", self.python_var),
@@ -1007,6 +1098,7 @@ class SettingsDialog:
             ("MLX Mac", self.mlx_var),
             ("whisper.cpp", self.whisper_cpp_var),
             ("Modele moteur", self.model_var),
+            ("Post-traitement", self.postprocess_status_var),
             ("HF rapide", self.hf_status_var),
         ]
         for row, (label, variable) in enumerate(status_rows):
@@ -1015,25 +1107,10 @@ class SettingsDialog:
                 row=row, column=1, sticky="w", pady=3
             )
 
-        actions = ttk.Frame(status, style="Surface.TFrame")
-        actions.grid(row=0, column=2, rowspan=7, sticky="ne", padx=(16, 0))
-        self.ffmpeg_button = ttk.Button(actions, text="Installer FFmpeg", command=self.install_ffmpeg)
-        self.ffmpeg_button.pack(fill="x", pady=(0, 7))
-        self.backend_button = ttk.Button(actions, text="Installer moteur", command=self.install_selected_backend)
-        self.backend_button.pack(fill="x", pady=(0, 7))
-        self.model_button = ttk.Button(actions, text="Telecharger modele moteur", command=self.install_model)
-        self.model_button.pack(fill="x", pady=(0, 7))
-        self.batch_button = ttk.Button(actions, text="Packages / modeles", command=self.open_batch_downloads)
-        self.batch_button.pack(fill="x", pady=(0, 7))
-        self.benchmark_button = ttk.Button(actions, text="Tester performances", command=self.run_benchmark)
-        self.benchmark_button.pack(fill="x", pady=(0, 7))
-        self.refresh_button = ttk.Button(actions, text="Reverifier", command=self.refresh)
-        self.refresh_button.pack(fill="x")
-
-        log_frame = ttk.Frame(self.window, style="Surface.TFrame", padding=(16, 6))
-        log_frame.grid(row=3, column=0, sticky="nsew")
+        log_frame = ttk.Frame(notebook, style="Surface.TFrame", padding=(16, 12))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(1, weight=1)
+        notebook.add(log_frame, text="Journal")
         ttk.Label(log_frame, text="Journal", style="Header.TLabel", font=("Segoe UI", 10, "bold")).grid(
             row=0, column=0, sticky="w", pady=(0, 6)
         )
@@ -1044,7 +1121,7 @@ class SettingsDialog:
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
         footer = ttk.Frame(self.window, style="Surface.TFrame", padding=(16, 10))
-        footer.grid(row=4, column=0, sticky="ew")
+        footer.grid(row=2, column=0, sticky="ew")
         footer.columnconfigure(1, weight=1)
         ttk.Label(footer, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
         self.install_progress = ttk.Progressbar(footer, mode="indeterminate", length=180)
@@ -1061,6 +1138,9 @@ class SettingsDialog:
         self.backend_choice.set(BACKEND_LABELS.get(self.app.config.backend, BACKEND_LABELS[BACKEND_AUTO]))
         self.model_choice.set(self.app.config.model_size)
         self.profile_choice.set(PROFILE_LABELS.get(self.app.config.transcription_profile, PROFILE_LABELS[PROFILE_FAST]))
+        self.postprocess_choice.set(
+            POSTPROCESS_LABELS.get(self.app.config.postprocess_engine, POSTPROCESS_LABELS[POSTPROCESS_LLM_DIRECT])
+        )
         self.hf_fast_var.set(self.app.config.hf_fast_download)
         active_parts = [f"{report.backend_label} ({report.device}, {report.compute_type})"]
         if report.backend_id == "faster-whisper":
@@ -1078,6 +1158,15 @@ class SettingsDialog:
         self.mlx_var.set("OK" if backend_health(self.app.config, "mlx-whisper").dependency_ok else "Manquant ou incompatible")
         self.whisper_cpp_var.set("OK" if backend_health(self.app.config, "whisper.cpp").dependency_ok else "Binaire introuvable")
         self.model_var.set(f"Local : {local_model}" if local_model else "Absent - telechargement requis")
+        postprocess_runtime_ok = importlib.util.find_spec("llama_cpp") is not None
+        postprocess_model = self.app.config.local_postprocess_model_path()
+        if postprocess_runtime_ok and postprocess_model:
+            postprocess_status = f"LLM local pret : {postprocess_model.name}"
+        elif not postprocess_runtime_ok:
+            postprocess_status = "LLM local : runtime absent"
+        else:
+            postprocess_status = "LLM local : modele absent"
+        self.postprocess_status_var.set(postprocess_status)
         token_status = "token present" if self.app.config.hf_token.strip() else "sans token"
         fast_status = "Xet rapide actif" if self.app.config.hf_fast_download else "standard"
         self.hf_status_var.set(f"{fast_status} | {token_status} | concurrence {self.app.config.hf_xet_concurrency}")
@@ -1152,6 +1241,23 @@ class SettingsDialog:
         self.log(f"Profil selectionne : {selected_label}")
         self.refresh()
 
+    def update_postprocess_choice(self) -> None:
+        selected_label = self.postprocess_choice.get()
+        selected = POSTPROCESS_BY_LABEL.get(selected_label, POSTPROCESS_LLM_DIRECT)
+        if selected == self.app.config.postprocess_engine:
+            return
+        if self.app.installing_dependency:
+            self.postprocess_choice.set(
+                POSTPROCESS_LABELS.get(self.app.config.postprocess_engine, POSTPROCESS_LABELS[POSTPROCESS_LLM_DIRECT])
+            )
+            return
+
+        self.app.config = replace(self.app.config, postprocess_engine=selected)
+        self.app.config.save_user_settings()
+        self.app.pipeline.config = self.app.config
+        self.log(f"Post-traitement selectionne : {selected_label}")
+        self.refresh()
+
     def update_hf_fast_choice(self) -> None:
         fast = bool(self.hf_fast_var.get())
         self.app.config = replace(
@@ -1215,6 +1321,42 @@ class SettingsDialog:
             self.log(str(exc))
             return
         self._confirm_and_run(plan)
+
+    def install_postprocess_runtime(self) -> None:
+        self._confirm_and_run(llama_cpp_python_plan())
+
+    def install_postprocess_model(self) -> None:
+        if importlib.util.find_spec("huggingface_hub") is None:
+            messagebox.showerror(
+                "Modele LLM",
+                "Installez d'abord l'accelerateur Hugging Face depuis Packages / modeles.",
+                parent=self.window,
+            )
+            return
+        local_model = self.app.config.local_postprocess_model_path()
+        if local_model:
+            messagebox.showinfo("Modele LLM", f"Modele deja disponible :\n{local_model}", parent=self.window)
+            return
+        if self.app.installing_dependency:
+            messagebox.showinfo("Operation en cours", "Une operation est deja en cours.", parent=self.window)
+            return
+        confirmed = messagebox.askyesno(
+            "Telecharger le modele LLM",
+            "WisperAuto va telecharger le modele local de post-traitement intelligent :\n\n"
+            f"{self.app.config.postprocess_model_repo}\n{self.app.config.postprocess_model_file}\n\n"
+            "Cette operation utilise Internet uniquement pour le telechargement. Continuer ?",
+            parent=self.window,
+        )
+        if not confirmed:
+            return
+
+        self.app.installing_dependency = True
+        self.cancel_token = CancellationToken()
+        self._set_install_buttons("disabled")
+        self._start_progress()
+        self.status_var.set("Telechargement du modele LLM en cours...")
+        thread = threading.Thread(target=self._run_postprocess_model_download, daemon=True)
+        thread.start()
 
     def install_model(self) -> None:
         backend = self._selected_backend_for_actions()
@@ -1346,6 +1488,21 @@ class SettingsDialog:
             return
         self.window.after(0, self._install_finished, "Modele", True, "", False)
 
+    def _run_postprocess_model_download(self) -> None:
+        try:
+            download_postprocess_model(
+                self.app.config,
+                logger=lambda message: self.window.after(0, self.log, message),
+                cancel_token=self.cancel_token,
+            )
+        except OperationCancelledError as exc:
+            self.window.after(0, self._install_finished, "Modele LLM", False, str(exc), True)
+            return
+        except Exception as exc:
+            self.window.after(0, self._install_finished, "Modele LLM", False, str(exc), False)
+            return
+        self.window.after(0, self._install_finished, "Modele LLM", True, "", False)
+
     def _run_benchmark(self, path: Path) -> None:
         try:
             results = benchmark_backends(
@@ -1403,6 +1560,8 @@ class SettingsDialog:
         self.backend_button.configure(state=state)
         self.model_button.configure(state=state)
         self.batch_button.configure(state=state)
+        self.postprocess_runtime_button.configure(state=state)
+        self.postprocess_model_button.configure(state=state)
         self.benchmark_button.configure(state=state)
         self.refresh_button.configure(state=state)
         self.cancel_button.configure(state="normal" if state == "disabled" else "disabled")
@@ -1512,6 +1671,8 @@ class BatchDownloadDialog:
             DownloadItem("package:faster-whisper", "Moteur faster-whisper", "package", backend=BACKEND_FASTER_WHISPER),
             DownloadItem("package:mlx-whisper", "Moteur MLX Mac", "package", backend=BACKEND_MLX_WHISPER),
             DownloadItem("package:whisper.cpp", "Moteur whisper.cpp", "package", backend=BACKEND_WHISPER_CPP),
+            DownloadItem("package:postprocess-llm", "Post-traitement LLM local (llama.cpp)", "package"),
+            DownloadItem("model:postprocess-llm", "Modele post-traitement LLM GGUF", "postprocess_model"),
         ]
         model_items = [
             DownloadItem(
@@ -1534,7 +1695,11 @@ class BatchDownloadDialog:
             self.item_by_tree_id[tree_id] = item
 
     def _kind_label(self, item: DownloadItem) -> str:
-        return "Package" if item.kind == "package" else "Modele"
+        if item.kind == "package":
+            return "Package"
+        if item.kind == "postprocess_model":
+            return "Modele LLM"
+        return "Modele"
 
     def _status(self, item: DownloadItem) -> str:
         if item.kind == "package":
@@ -1544,9 +1709,15 @@ class BatchDownloadDialog:
                 return "OK" if hub and xet else "A installer"
             if item.key == "package:ffmpeg":
                 return "OK" if shutil.which("ffmpeg") and shutil.which("ffprobe") else "A installer"
+            if item.key == "package:postprocess-llm":
+                return "OK" if importlib.util.find_spec("llama_cpp") is not None else "A installer"
             if item.backend:
                 return "OK" if backend_health(self.app.config, item.backend).dependency_ok else "A installer"
             return "-"
+
+        if item.kind == "postprocess_model":
+            model = self.app.config.local_postprocess_model_path()
+            return f"Local : {model}" if model else "A telecharger"
 
         config = replace(self.app.config, backend=item.backend, model_size=item.model_size)
         health = backend_health(config, item.backend)
@@ -1585,6 +1756,8 @@ class BatchDownloadDialog:
                 self._log(f"--- {item.label} ---")
                 if item.kind == "package":
                     self._install_package(item)
+                elif item.kind == "postprocess_model":
+                    self._download_postprocess_model()
                 else:
                     self._download_model(item)
             self.window.after(0, self._finished, True, "", False)
@@ -1598,6 +1771,8 @@ class BatchDownloadDialog:
             plan = hf_acceleration_plan()
         elif item.key == "package:ffmpeg":
             plan = ffmpeg_plan()
+        elif item.key == "package:postprocess-llm":
+            plan = llama_cpp_python_plan()
         elif item.backend:
             plan = backend_install_plan(item.backend, Path(__file__).resolve().parent.parent)
         else:
@@ -1615,6 +1790,12 @@ class BatchDownloadDialog:
             self._thread_log(f"Deja disponible : {health.model_path}")
             return
         download_model(config, backend=item.backend, logger=self._thread_log, cancel_token=self.cancel_token)
+
+    def _download_postprocess_model(self) -> None:
+        if self.app.config.local_postprocess_model_path():
+            self._thread_log(f"Deja disponible : {self.app.config.local_postprocess_model_path()}")
+            return
+        download_postprocess_model(self.app.config, logger=self._thread_log, cancel_token=self.cancel_token)
 
     def cancel(self) -> None:
         if self.cancel_token:

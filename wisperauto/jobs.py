@@ -14,6 +14,7 @@ STATUS_READY = "ready"
 STATUS_QUEUED = "queued"
 STATUS_CONVERTING = "converting"
 STATUS_TRANSCRIBING = "transcribing"
+STATUS_POSTPROCESSING = "postprocessing"
 STATUS_DONE = "done"
 STATUS_ERROR = "error"
 STATUS_CANCELLED = "cancelled"
@@ -21,6 +22,7 @@ STATUS_IN_PROGRESS = {
     STATUS_QUEUED,
     STATUS_CONVERTING,
     STATUS_TRANSCRIBING,
+    STATUS_POSTPROCESSING,
 }
 
 STATUS_LABELS = {
@@ -28,6 +30,7 @@ STATUS_LABELS = {
     STATUS_QUEUED: "En attente",
     STATUS_CONVERTING: "Conversion",
     STATUS_TRANSCRIBING: "Transcription",
+    STATUS_POSTPROCESSING: "Post-traitement",
     STATUS_DONE: "Termine",
     STATUS_ERROR: "Erreur",
     STATUS_CANCELLED: "Annule",

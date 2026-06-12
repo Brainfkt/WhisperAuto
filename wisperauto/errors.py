@@ -73,3 +73,12 @@ class DependencyUnavailableError(WisperAutoError):
             f"Dependance Python manquante : {dependency}. "
             "Installez les dependances avec pip install -r requirements.txt."
         )
+
+
+class PostProcessUnavailableError(WisperAutoError):
+    def __init__(self, details):
+        details = str(details).strip() if details else "modele LLM local indisponible"
+        self.user_message = (
+            "Post-traitement intelligent indisponible : "
+            f"{details}. La transcription brute est conservee."
+        )

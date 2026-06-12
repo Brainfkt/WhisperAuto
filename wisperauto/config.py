@@ -29,6 +29,20 @@ BACKEND_CHOICES = {
     BACKEND_MLX_WHISPER,
     BACKEND_WHISPER_CPP,
 }
+POSTPROCESS_RULES = "rules"
+POSTPROCESS_LLM_DIRECT = "llm_direct"
+POSTPROCESS_LLM_PATCH = POSTPROCESS_LLM_DIRECT
+POSTPROCESS_ENGINE_CHOICES = {
+    POSTPROCESS_LLM_DIRECT,
+}
+LEGACY_POSTPROCESS_ENGINE_CHOICES = {
+    POSTPROCESS_RULES,
+    "llm_patch",
+    POSTPROCESS_LLM_DIRECT,
+}
+OUTPUT_MODE_CHOICES = {"raw", "smart", "report"}
+DEFAULT_POSTPROCESS_MODEL_REPO = "bartowski/Qwen2.5-1.5B-Instruct-GGUF"
+DEFAULT_POSTPROCESS_MODEL_FILE = "Qwen2.5-1.5B-Instruct-Q5_K_M.gguf"
 
 SUPPORTED_EXTENSIONS = {
     ".ds2",
@@ -101,6 +115,20 @@ def _setting_int(settings: dict, key: str, env_name: str, default: int, minimum:
 def _setting_choice(settings: dict, key: str, env_name: str, choices: set[str], default: str) -> str:
     value = str(os.environ.get(env_name, settings.get(key, default)) or default)
     return value if value in choices else default
+
+
+def normalize_output_mode(value: str) -> str:
+    value = str(value or "smart")
+    if value == "cleaned":
+        return "smart"
+    return value if value in OUTPUT_MODE_CHOICES else "smart"
+
+
+def normalize_postprocess_engine(value: str) -> str:
+    value = str(value or POSTPROCESS_LLM_DIRECT)
+    if value in LEGACY_POSTPROCESS_ENGINE_CHOICES:
+        return POSTPROCESS_LLM_DIRECT
+    return POSTPROCESS_LLM_DIRECT
 
 
 def default_home() -> Path:
@@ -178,6 +206,14 @@ class AppConfig:
     hf_token: str = ""
     hf_fast_download: bool = False
     hf_xet_concurrency: int = 32
+    postprocess_engine: str = POSTPROCESS_LLM_DIRECT
+    postprocess_model_path: str = ""
+    postprocess_model_repo: str = DEFAULT_POSTPROCESS_MODEL_REPO
+    postprocess_model_file: str = DEFAULT_POSTPROCESS_MODEL_FILE
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "output_mode", normalize_output_mode(self.output_mode))
+        object.__setattr__(self, "postprocess_engine", normalize_postprocess_engine(self.postprocess_engine))
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -222,9 +258,11 @@ class AppConfig:
             ),
             keep_intermediate_wav=_env_bool("WISPERAUTO_KEEP_WAV", False),
             allow_model_download=_env_bool("WISPERAUTO_ALLOW_MODEL_DOWNLOAD", False),
-            output_mode=os.environ.get(
-                "WISPERAUTO_OUTPUT_MODE",
-                str(settings.get("output_mode") or "smart"),
+            output_mode=normalize_output_mode(
+                os.environ.get(
+                    "WISPERAUTO_OUTPUT_MODE",
+                    str(settings.get("output_mode") or "smart"),
+                )
             ),
             transcription_profile=_setting_choice(
                 settings,
@@ -248,6 +286,25 @@ class AppConfig:
                 "WISPERAUTO_HF_XET_CONCURRENCY",
                 32,
                 minimum=1,
+            ),
+            postprocess_engine=_setting_choice(
+                settings,
+                "postprocess_engine",
+                "WISPERAUTO_POSTPROCESS_ENGINE",
+                LEGACY_POSTPROCESS_ENGINE_CHOICES,
+                POSTPROCESS_LLM_DIRECT,
+            ),
+            postprocess_model_path=os.environ.get(
+                "WISPERAUTO_POSTPROCESS_MODEL_PATH",
+                str(settings.get("postprocess_model_path") or ""),
+            ),
+            postprocess_model_repo=os.environ.get(
+                "WISPERAUTO_POSTPROCESS_MODEL_REPO",
+                str(settings.get("postprocess_model_repo") or DEFAULT_POSTPROCESS_MODEL_REPO),
+            ),
+            postprocess_model_file=os.environ.get(
+                "WISPERAUTO_POSTPROCESS_MODEL_FILE",
+                str(settings.get("postprocess_model_file") or DEFAULT_POSTPROCESS_MODEL_FILE),
             ),
         )
 
@@ -307,6 +364,10 @@ class AppConfig:
     def settings_path(self) -> Path:
         return self.home / "settings.json"
 
+    @property
+    def postprocess_models_dir(self) -> Path:
+        return self.models_dir / "postprocess"
+
     def ensure_directories(self) -> None:
         for folder in (
             self.inbox_dir,
@@ -315,8 +376,27 @@ class AppConfig:
             self.failed_dir,
             self.logs_dir,
             self.models_dir,
+            self.postprocess_models_dir,
         ):
             folder.mkdir(parents=True, exist_ok=True)
+
+    def local_postprocess_model_path(self) -> Path | None:
+        configured = self.postprocess_model_path.strip()
+        if configured:
+            path = Path(configured).expanduser()
+            if path.exists() and path.is_file() and path.suffix.lower() == ".gguf":
+                return path
+
+        candidate = self.postprocess_models_dir / self.postprocess_model_file
+        if candidate.exists() and candidate.is_file() and candidate.suffix.lower() == ".gguf":
+            return candidate
+        return None
+
+    def postprocess_model_status_label(self) -> str:
+        model_path = self.local_postprocess_model_path()
+        if model_path:
+            return f"Modele LLM local : {model_path.name}"
+        return "Modele LLM absent"
 
     def local_model_path(self, backend: str | None = None) -> Path | None:
         backend = self._normal_backend(backend)
@@ -421,6 +501,10 @@ class AppConfig:
             "hf_token": self.hf_token,
             "hf_fast_download": self.hf_fast_download,
             "hf_xet_concurrency": self.hf_xet_concurrency,
+            "postprocess_engine": self.postprocess_engine,
+            "postprocess_model_path": self.postprocess_model_path,
+            "postprocess_model_repo": self.postprocess_model_repo,
+            "postprocess_model_file": self.postprocess_model_file,
         }
         tmp_path = self.settings_path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

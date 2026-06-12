@@ -5,13 +5,12 @@ Application locale et légère de transcription audio pour usage juridique.
 WisperAuto garde deux étapes séparées :
 
 - transcription audio brute avec un moteur local (`Auto`, `faster-whisper`, `MLX Mac` ou `whisper.cpp`) ;
-- post-traitement local et configurable pour produire des versions nettoyées ou intelligentes.
+- post-traitement LLM local pour produire directement une version intelligente lisible.
 
 ## Modes de sortie
 
 - **Transcription brute** : conserve les mots reconnus, y compris les commandes vocales.
-- **Transcription nettoyée** : applique ponctuation et paragraphes évidents, supprime quelques hésitations inutiles.
-- **Transcription intelligente** : interprète les commandes de mise en forme, listes, titres, corrections simples et références fréquentes.
+- **Transcription intelligente** : le LLM local interprète les commandes de mise en forme, ponctuation, listes, paragraphes et références fréquentes.
 - **Compte rendu structuré** : organise la sortie sans inventer d'information et sans remplacer la transcription originale.
 
 ## Confidentialité
@@ -89,7 +88,7 @@ Variables utiles :
 - `WISPERAUTO_MLX_MODEL_PATH` : chemin vers un modèle MLX local.
 - `WISPERAUTO_WHISPER_CPP_MODEL_PATH` : chemin vers un modèle `whisper.cpp`.
 - `WISPERAUTO_WHISPER_CPP_BINARY` : chemin vers `whisper-cli` si non présent dans le PATH.
-- `WISPERAUTO_OUTPUT_MODE` : `raw`, `cleaned`, `smart` ou `report`.
+- `WISPERAUTO_OUTPUT_MODE` : `raw`, `smart` ou `report` (`cleaned` est automatiquement remappe vers `smart` pour les anciens réglages).
 - `WISPERAUTO_TRANSCRIPTION_PROFILE` : `fast`, `balanced` ou `precise`.
 - `WISPERAUTO_CPU_THREADS` : threads CPU pour `faster-whisper`, `0` = auto.
 - `WISPERAUTO_NUM_WORKERS` : workers CTranslate2, par defaut `1`.

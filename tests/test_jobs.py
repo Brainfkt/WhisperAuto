@@ -7,6 +7,7 @@ from pathlib import Path
 from wisperauto.jobs import (
     STATUS_CANCELLED,
     STATUS_DONE,
+    STATUS_POSTPROCESSING,
     STATUS_TRANSCRIBING,
     JobRecord,
     JobStore,
@@ -62,6 +63,26 @@ class JobStoreTest(unittest.TestCase):
             self.assertEqual(by_id["done"].status, STATUS_DONE)
             latest_by_id = {record.id: record for record in store.latest()}
             self.assertEqual(latest_by_id["stale"].status, STATUS_CANCELLED)
+
+    def test_recover_interrupted_records_marks_stale_postprocess_retryable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = JobStore(Path(tmpdir) / "history.jsonl")
+            stale = JobRecord(
+                id="stale",
+                source_name="stale.mp3",
+                source_path="/tmp/stale.mp3",
+                status=STATUS_POSTPROCESSING,
+                progress=94,
+                phase="postprocess",
+                message="Post-traitement intelligent en cours.",
+                eta_seconds=None,
+            )
+            store.append(stale)
+
+            recovered = recover_interrupted_records(store, store.latest())
+
+            self.assertEqual(recovered[0].status, STATUS_CANCELLED)
+            self.assertIn("interrompu", recovered[0].message)
 
     def test_utc_now_is_timezone_aware_without_deprecation_warning(self):
         with warnings.catch_warnings():

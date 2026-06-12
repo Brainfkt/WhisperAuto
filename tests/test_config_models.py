@@ -8,6 +8,9 @@ from wisperauto.config import (
     BACKEND_MLX_WHISPER,
     BACKEND_WHISPER_CPP,
     DEFAULT_MODEL_SIZE,
+    DEFAULT_POSTPROCESS_MODEL_FILE,
+    DEFAULT_POSTPROCESS_MODEL_REPO,
+    POSTPROCESS_LLM_DIRECT,
     PROFILE_FAST,
     PROFILE_PRECISE,
     AppConfig,
@@ -23,6 +26,7 @@ class ConfigModelTest(unittest.TestCase):
             config = AppConfig(home=Path(tmpdir))
 
             self.assertEqual(config.model_size, DEFAULT_MODEL_SIZE)
+            self.assertEqual(config.postprocess_engine, POSTPROCESS_LLM_DIRECT)
 
     def test_save_user_settings_round_trips_from_env_loader(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -61,6 +65,54 @@ class ConfigModelTest(unittest.TestCase):
             self.assertEqual(loaded.hf_token, "hf_test_token")
             self.assertTrue(loaded.hf_fast_download)
             self.assertEqual(loaded.hf_xet_concurrency, 24)
+
+    def test_postprocess_model_settings_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            model_path = home / "models" / "postprocess" / "custom.gguf"
+            model_path.parent.mkdir(parents=True)
+            model_path.write_bytes(b"gguf")
+            config = AppConfig(
+                home=home,
+                postprocess_engine=POSTPROCESS_LLM_DIRECT,
+                postprocess_model_path=str(model_path),
+                postprocess_model_repo="repo/custom",
+                postprocess_model_file="custom.gguf",
+            )
+            config.save_user_settings()
+
+            with unittest.mock.patch.dict("os.environ", {"WISPERAUTO_HOME": str(home)}, clear=True):
+                loaded = AppConfig.from_env()
+
+            self.assertEqual(loaded.postprocess_engine, POSTPROCESS_LLM_DIRECT)
+            self.assertEqual(loaded.postprocess_model_repo, "repo/custom")
+            self.assertEqual(loaded.postprocess_model_file, "custom.gguf")
+            self.assertEqual(loaded.local_postprocess_model_path(), model_path)
+
+    def test_legacy_cleaned_and_rules_settings_are_mapped_to_llm_smart(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            home.mkdir(parents=True, exist_ok=True)
+            (home / "settings.json").write_text(
+                json.dumps({"output_mode": "cleaned", "postprocess_engine": "rules"}),
+                encoding="utf-8",
+            )
+
+            with unittest.mock.patch.dict("os.environ", {"WISPERAUTO_HOME": str(home)}, clear=True):
+                loaded = AppConfig.from_env()
+
+            self.assertEqual(loaded.output_mode, "smart")
+            self.assertEqual(loaded.postprocess_engine, POSTPROCESS_LLM_DIRECT)
+
+    def test_default_postprocess_model_path_uses_project_home(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = AppConfig(home=Path(tmpdir))
+            config.ensure_directories()
+            model_path = config.postprocess_models_dir / DEFAULT_POSTPROCESS_MODEL_FILE
+            model_path.write_bytes(b"gguf")
+
+            self.assertEqual(config.postprocess_model_repo, DEFAULT_POSTPROCESS_MODEL_REPO)
+            self.assertEqual(config.local_postprocess_model_path(), model_path)
 
     def test_existing_local_model_is_detected_before_default(self):
         with tempfile.TemporaryDirectory() as tmpdir:

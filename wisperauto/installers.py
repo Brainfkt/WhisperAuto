@@ -82,6 +82,19 @@ def hf_acceleration_plan() -> InstallPlan:
     )
 
 
+def llama_cpp_python_plan() -> InstallPlan:
+    return InstallPlan(
+        name="Post-traitement LLM local",
+        commands=[
+            [sys.executable, "-m", "pip", "install", "--upgrade", "llama-cpp-python>=0.3,<1.0"],
+        ],
+        note=(
+            "Installe llama-cpp-python pour generer la transcription intelligente en local. "
+            "Sur Mac Apple Silicon, utilisez un Python arm64 pour de bonnes performances."
+        ),
+    )
+
+
 def mlx_whisper_plan() -> InstallPlan:
     if sys.platform != "darwin" or platform.machine().lower() not in {"arm64", "aarch64"}:
         raise InstallUnavailableError("mlx-whisper est disponible uniquement sur Mac Apple Silicon.")
@@ -359,4 +372,65 @@ def download_model(
     if not model_path:
         raise RuntimeError("Telechargement termine, mais le modele local reste introuvable.")
     logger(f"Modele disponible : {model_path}")
+    return model_path
+
+
+def download_postprocess_model(
+    config: AppConfig,
+    logger: InstallLogger | None = None,
+    cancel_token: CancellationToken | None = None,
+) -> Path:
+    logger = logger or (lambda _message: None)
+    local_model = config.local_postprocess_model_path()
+    if local_model:
+        logger(f"Modele de post-traitement deja disponible : {local_model}")
+        return local_model
+
+    if cancel_token:
+        cancel_token.raise_if_cancelled()
+    config.ensure_directories()
+    env = os.environ.copy()
+    if config.hf_token.strip():
+        env["HF_TOKEN"] = config.hf_token.strip()
+        logger("Token Hugging Face detecte : il sera transmis au telechargement.")
+    if config.hf_fast_download:
+        env.pop("HF_HUB_DISABLE_XET", None)
+        env["HF_XET_HIGH_PERFORMANCE"] = "1"
+        env["HF_XET_NUM_CONCURRENT_RANGE_GETS"] = str(max(1, config.hf_xet_concurrency))
+        env.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
+        logger(
+            "Mode Hugging Face rapide active : Xet haute performance, "
+            f"{env['HF_XET_NUM_CONCURRENT_RANGE_GETS']} connexions concurrentes."
+        )
+
+    command = [
+        sys.executable,
+        "-m",
+        "wisperauto.postprocess_model_download",
+        "--home",
+        str(config.home),
+        "--repo-id",
+        config.postprocess_model_repo,
+        "--filename",
+        config.postprocess_model_file,
+    ]
+    if config.hf_fast_download:
+        command.append("--hf-fast-download")
+        command.extend(["--hf-xet-concurrency", str(max(1, config.hf_xet_concurrency))])
+    elif config.disable_hf_xet:
+        command.append("--disable-hf-xet")
+
+    kwargs = {
+        "logger": logger,
+        "timeout_seconds": config.model_download_timeout_minutes * 60,
+        "env": env,
+    }
+    if cancel_token is not None:
+        kwargs["cancel_token"] = cancel_token
+    run_streamed_command(command, **kwargs)
+
+    model_path = config.local_postprocess_model_path()
+    if not model_path:
+        raise RuntimeError("Telechargement termine, mais le modele LLM local reste introuvable.")
+    logger(f"Modele de post-traitement disponible : {model_path}")
     return model_path

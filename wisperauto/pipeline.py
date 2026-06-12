@@ -38,6 +38,7 @@ from .errors import (
     FFmpegUnavailableError,
     FileNotReadyError,
     OperationCancelledError,
+    PostProcessUnavailableError,
     UnsupportedFormatError,
     WisperAutoError,
 )
@@ -46,6 +47,7 @@ from .jobs import (
     STATUS_CONVERTING,
     STATUS_DONE,
     STATUS_ERROR,
+    STATUS_POSTPROCESSING,
     STATUS_QUEUED,
     STATUS_READY,
     STATUS_TRANSCRIBING,
@@ -53,10 +55,12 @@ from .jobs import (
     JobStore,
     utc_now,
 )
-from .postprocess import MODE_SMART, PostProcessor
+from .postprocess import MODE_RAW, MODE_SMART, PostProcessor
+from .postprocess_llm import PostProcessProgress
 
 
 ProgressCallback = Callable[[JobRecord, str], None]
+PostProcessorFactory = Callable[[AppConfig], PostProcessor]
 
 
 class Engine(Protocol):
@@ -168,21 +172,33 @@ class TranscriptionPipeline:
         config: AppConfig,
         store: JobStore | None = None,
         engine_factory: EngineFactory | None = None,
+        post_processor_factory: PostProcessorFactory | None = None,
         command_runner: Callable[..., subprocess.CompletedProcess] | None = None,
     ):
         self.config = config
         self.config.ensure_directories()
         self.store = store or JobStore(config.history_path)
         self.engine_factory = engine_factory or create_engine
+        self.post_processor_factory = post_processor_factory or (
+            lambda app_config: PostProcessor(app_config.commands_path, config=app_config)
+        )
         self.command_runner = command_runner or subprocess.run
         self._engine: Engine | None = None
         self._engine_key: tuple[object, ...] | None = None
         self._engine_lock = threading.Lock()
+        self._post_processor: PostProcessor | None = None
+        self._post_processor_key: tuple[object, ...] | None = None
+        self._post_processor_lock = threading.Lock()
 
     def reset_engine(self) -> None:
         with self._engine_lock:
             self._engine = None
             self._engine_key = None
+
+    def reset_post_processor(self) -> None:
+        with self._post_processor_lock:
+            self._post_processor = None
+            self._post_processor_key = None
 
     def import_audio_file(self, source_path: Path) -> Path:
         source_path = Path(source_path)
@@ -362,6 +378,20 @@ class TranscriptionPipeline:
                 transcript_path=str(txt_path),
                 processed_path=str(processed_path),
                 error="",
+                finished_at=utc_now(),
+            )
+            return record
+        except PostProcessUnavailableError as exc:
+            record = self._update(
+                record,
+                progress_callback,
+                progress=max(record.progress, 94),
+                status=STATUS_ERROR,
+                phase="postprocess_error",
+                message=str(exc),
+                progress_detail="La transcription brute est conservee. Installez ou relancez le LLM local.",
+                eta_seconds=None,
+                error=str(exc),
                 finished_at=utc_now(),
             )
             return record
@@ -698,15 +728,75 @@ class TranscriptionPipeline:
         record = self._update(
             record,
             progress_callback,
+            status=STATUS_POSTPROCESSING,
             progress=max(record.progress, 94),
             phase="postprocess",
             message="Post-traitement intelligent en cours.",
-            progress_detail="Generation des versions brute, nettoyee et intelligente",
+            progress_detail="Initialisation du LLM local",
+            raw_transcript_path=str(raw_path),
+            outputs={MODE_RAW: str(raw_path)},
+            transcript_path="",
             eta_seconds=None,
         )
         raw_text = raw_path.read_text(encoding="utf-8")
-        post_processor = PostProcessor(self.config.commands_path)
-        result = post_processor.build_outputs(raw_text)
+
+        def update_postprocess_progress(event: PostProcessProgress) -> None:
+            nonlocal record
+            total = max(0, event.total_chunks)
+            completed = max(0, min(event.completed_chunks, total)) if total else 0
+            if total:
+                if event.stage == "chunk_done":
+                    ratio = completed / total
+                else:
+                    ratio = max(0.0, min(1.0, event.chunk_index / total))
+                progress = max(94, min(98, 94 + int(ratio * 4)))
+            else:
+                progress = 94
+
+            detail = event.detail or "Post-traitement LLM local"
+            if event.elapsed_seconds >= 1:
+                detail = f"{detail} - {format_elapsed(event.elapsed_seconds)} ecoulees"
+
+            if event.stage == "loading":
+                message = "Chargement du LLM local."
+            elif event.stage == "ready":
+                message = "Preparation du post-traitement intelligent."
+            elif event.stage in {"chunk_start", "chunk_running", "chunk_done"}:
+                message = "Post-traitement intelligent en cours."
+            elif event.stage == "done":
+                message = "Post-traitement intelligent termine."
+                progress = max(progress, 98)
+            else:
+                message = "Post-traitement intelligent en cours."
+
+            record = self._update(
+                record,
+                progress_callback,
+                status=STATUS_POSTPROCESSING,
+                progress=max(record.progress, progress),
+                phase="postprocess",
+                message=message,
+                progress_detail=detail,
+                eta_seconds=event.eta_seconds,
+            )
+
+        post_processor = self._get_post_processor()
+        result = post_processor.build_outputs(
+            raw_text,
+            progress_callback=update_postprocess_progress,
+            cancel_token=cancel_token,
+        )
+
+        record = self._update(
+            record,
+            progress_callback,
+            status=STATUS_POSTPROCESSING,
+            progress=max(record.progress, 98),
+            phase="postprocess_write",
+            message="Ecriture des versions de sortie.",
+            progress_detail="Sauvegarde locale des fichiers texte",
+            eta_seconds=0,
+        )
 
         output_paths: dict[str, str] = {}
         for mode, content in result.outputs.items():
@@ -755,6 +845,21 @@ class TranscriptionPipeline:
             self._engine_key = key
             return self._engine
 
+    def _get_post_processor(self) -> PostProcessor:
+        model_path = self.config.local_postprocess_model_path()
+        key = (
+            self.config.postprocess_engine,
+            str(model_path) if model_path else "",
+            self.config.postprocess_model_repo,
+            self.config.postprocess_model_file,
+        )
+        with self._post_processor_lock:
+            if self._post_processor is not None and self._post_processor_key == key:
+                return self._post_processor
+            self._post_processor = self.post_processor_factory(self.config)
+            self._post_processor_key = key
+            return self._post_processor
+
     def _update(
         self,
         record: JobRecord,
@@ -773,7 +878,7 @@ class TranscriptionPipeline:
         message: str,
     ) -> None:
         if progress_callback:
-            progress_callback(record, message)
+            progress_callback(JobRecord.from_dict(record.to_dict()), message)
 
 
 def safe_float(value: str) -> float | None:
@@ -796,6 +901,17 @@ def format_duration(seconds: float) -> str:
         return f"{minutes:02d}:{rest:02d}"
     hours, minutes = divmod(minutes, 60)
     return f"{hours:02d}:{minutes:02d}:{rest:02d}"
+
+
+def format_elapsed(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, rest = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}min {rest:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}min"
 
 
 def terminate_process(process: subprocess.Popen) -> None:
