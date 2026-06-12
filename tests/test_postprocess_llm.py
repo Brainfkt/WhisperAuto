@@ -6,7 +6,7 @@ from wisperauto.cancel import CancellationToken
 from wisperauto.config import AppConfig
 from wisperauto.errors import OperationCancelledError
 from wisperauto.errors import PostProcessUnavailableError
-from wisperauto.postprocess_llm import DirectLLMPostProcessor, parse_smart_payload
+from wisperauto.postprocess_llm import DirectLLMPostProcessor, SYSTEM_PROMPT, parse_smart_payload
 
 
 class FakeDirectProvider:
@@ -20,6 +20,17 @@ class FakeDirectProvider:
 
 
 class DirectLLMPostProcessorTest(unittest.TestCase):
+    def test_system_prompt_distinguishes_formatting_from_business_commands(self):
+        self.assertIn("Commandes de mise en forme", SYSTEM_PROMPT)
+        self.assertIn("Consignes metier a conserver", SYSTEM_PROMPT)
+        self.assertIn("vous scannez", SYSTEM_PROMPT)
+        self.assertIn("vous faites un courriel", SYSTEM_PROMPT)
+        self.assertIn("Pointe Sotéline", SYSTEM_PROMPT)
+        self.assertIn("Gensotéline", SYSTEM_PROMPT)
+        self.assertIn("ci-joint", SYSTEM_PROMPT)
+        self.assertIn("point final puis retour a la ligne", SYSTEM_PROMPT)
+        self.assertNotIn('veulent souvent dire ".\n".', SYSTEM_PROMPT)
+
     def test_applies_direct_smart_text_without_python_rules(self):
         config = AppConfig(home=Path("/tmp/wisperauto-test"))
         provider = FakeDirectProvider(

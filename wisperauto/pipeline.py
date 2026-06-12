@@ -180,7 +180,7 @@ class TranscriptionPipeline:
         self.store = store or JobStore(config.history_path)
         self.engine_factory = engine_factory or create_engine
         self.post_processor_factory = post_processor_factory or (
-            lambda app_config: PostProcessor(app_config.commands_path, config=app_config)
+            lambda app_config: PostProcessor(config=app_config)
         )
         self.command_runner = command_runner or subprocess.run
         self._engine: Engine | None = None

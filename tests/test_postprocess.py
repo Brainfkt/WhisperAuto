@@ -25,7 +25,6 @@ class PostProcessorTest(unittest.TestCase):
         self.addCleanup(tmpdir.cleanup)
         config = AppConfig(home=Path(tmpdir.name))
         return PostProcessor(
-            config.commands_path,
             config=config,
             llm_provider=FakeDirectProvider(smart_text, warnings),
         )
@@ -56,7 +55,7 @@ class PostProcessorTest(unittest.TestCase):
     def test_missing_model_raises_clear_error_without_rules_fallback(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = AppConfig(home=Path(tmpdir))
-            processor = PostProcessor(config.commands_path, config=config)
+            processor = PostProcessor(config=config)
 
             with self.assertRaises(PostProcessUnavailableError) as raised:
                 processor.build_outputs("Bonjour virgule maitre point\n")

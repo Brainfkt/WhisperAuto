@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable
 
 from .errors import PostProcessUnavailableError
@@ -31,12 +30,10 @@ class PostProcessResult:
 class PostProcessor:
     def __init__(
         self,
-        commands_path: Path,
         config=None,
         postprocess_engine: str | None = None,
         llm_provider=None,
     ):
-        self.commands_path = commands_path
         self.config = config
         self.postprocess_engine = postprocess_engine or getattr(config, "postprocess_engine", "")
         self.llm_provider = llm_provider

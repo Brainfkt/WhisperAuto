@@ -357,10 +357,6 @@ class AppConfig:
         return self.logs_dir / "wisperauto.log"
 
     @property
-    def commands_path(self) -> Path:
-        return self.home / "voice_commands.json"
-
-    @property
     def settings_path(self) -> Path:
         return self.home / "settings.json"
 
