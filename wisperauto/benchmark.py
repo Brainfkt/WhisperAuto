@@ -8,7 +8,7 @@ import tempfile
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, cast
 
 from .backends import BACKEND_LABELS, BACKEND_FASTER_WHISPER, BACKEND_MLX_WHISPER, BACKEND_WHISPER_CPP, backend_health, create_engine
 from .cancel import CancellationToken
@@ -113,8 +113,10 @@ def benchmark_backends(
             cancel_token.raise_if_cancelled()
 
             transcribe_started = time.monotonic()
-            if hasattr(engine, "transcribe_with_progress"):
-                segments, _info = engine.transcribe_with_progress(clip_path, cancel_token=cancel_token)
+            transcribe_with_progress = getattr(engine, "transcribe_with_progress", None)
+            if callable(transcribe_with_progress):
+                progress_transcriber = cast(Callable[..., Any], transcribe_with_progress)
+                segments, _info = progress_transcriber(clip_path, cancel_token=cancel_token)
             else:
                 segments, _info = engine.transcribe(clip_path)
             segment_list = list(segments)

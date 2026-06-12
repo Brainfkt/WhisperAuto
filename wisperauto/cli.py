@@ -13,6 +13,14 @@ from .jobs import JobStore
 from .pipeline import TranscriptionPipeline, check_environment, iter_supported_files
 
 
+def _file_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_size, stat.st_mtime_ns
+
+
 def _print_preflight(config: AppConfig) -> None:
     report = check_environment(config)
     print(f"[INFO] Dossier WisperAuto : {config.home}")
@@ -24,7 +32,7 @@ def _print_preflight(config: AppConfig) -> None:
 
 def run_watch(config: AppConfig, allow_model_download: bool = False) -> int:
     pipeline = TranscriptionPipeline(config, JobStore(config.history_path))
-    seen: set[Path] = set()
+    seen: dict[Path, tuple[int, int]] = {}
     print("[START] Surveillance du dossier inbox")
     print(f"[INFO] Inbox : {config.inbox_dir}")
     _print_preflight(config)
@@ -35,16 +43,23 @@ def run_watch(config: AppConfig, allow_model_download: bool = False) -> int:
     try:
         while True:
             for path in iter_supported_files(config.inbox_dir):
-                if path in seen:
+                signature = _file_signature(path)
+                if signature is None:
                     continue
-                seen.add(path)
-                record = pipeline.process_file(
-                    path,
-                    allow_model_download=allow_model_download,
-                    progress_callback=lambda item, msg: print(
-                        f"[{item.status_label}] {item.source_name} - {msg}"
-                    ),
-                )
+                if seen.get(path) == signature:
+                    continue
+                seen[path] = signature
+                try:
+                    record = pipeline.process_file(
+                        path,
+                        allow_model_download=allow_model_download,
+                        progress_callback=lambda item, msg: print(
+                            f"[{item.status_label}] {item.source_name} - {msg}"
+                        ),
+                    )
+                finally:
+                    if not path.exists():
+                        seen.pop(path, None)
                 if record.status == "error":
                     print(f"[ERREUR] {record.source_name} : {record.error}")
                 else:

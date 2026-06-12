@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from wisperauto.config import (
     BACKEND_AUTO,
@@ -40,7 +41,7 @@ class ConfigModelTest(unittest.TestCase):
             )
             config.save_user_settings()
 
-            with unittest.mock.patch.dict("os.environ", {"WISPERAUTO_HOME": str(home)}, clear=True):
+            with patch.dict("os.environ", {"WISPERAUTO_HOME": str(home)}, clear=True):
                 loaded = AppConfig.from_env()
 
             self.assertEqual(loaded.model_size, "medium")
@@ -59,7 +60,7 @@ class ConfigModelTest(unittest.TestCase):
             )
             config.save_user_settings()
 
-            with unittest.mock.patch.dict("os.environ", {"WISPERAUTO_HOME": str(home)}, clear=True):
+            with patch.dict("os.environ", {"WISPERAUTO_HOME": str(home)}, clear=True):
                 loaded = AppConfig.from_env()
 
             self.assertEqual(loaded.hf_token, "hf_test_token")
@@ -81,7 +82,7 @@ class ConfigModelTest(unittest.TestCase):
             )
             config.save_user_settings()
 
-            with unittest.mock.patch.dict("os.environ", {"WISPERAUTO_HOME": str(home)}, clear=True):
+            with patch.dict("os.environ", {"WISPERAUTO_HOME": str(home)}, clear=True):
                 loaded = AppConfig.from_env()
 
             self.assertEqual(loaded.postprocess_engine, POSTPROCESS_LLM_DIRECT)
@@ -98,7 +99,7 @@ class ConfigModelTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with unittest.mock.patch.dict("os.environ", {"WISPERAUTO_HOME": str(home)}, clear=True):
+            with patch.dict("os.environ", {"WISPERAUTO_HOME": str(home)}, clear=True):
                 loaded = AppConfig.from_env()
 
             self.assertEqual(loaded.output_mode, "smart")
@@ -122,7 +123,7 @@ class ConfigModelTest(unittest.TestCase):
             (medium / "model.bin").write_bytes(b"model")
 
             self.assertEqual(detect_existing_model_size(home), "medium")
-            with unittest.mock.patch.dict("os.environ", {"WISPERAUTO_HOME": str(home)}, clear=True):
+            with patch.dict("os.environ", {"WISPERAUTO_HOME": str(home)}, clear=True):
                 loaded = AppConfig.from_env()
 
             self.assertEqual(loaded.model_size, "medium")
@@ -217,7 +218,7 @@ class ConfigModelTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with unittest.mock.patch.dict("os.environ", {"WISPERAUTO_HOME": str(home)}, clear=True):
+            with patch.dict("os.environ", {"WISPERAUTO_HOME": str(home)}, clear=True):
                 loaded = AppConfig.from_env()
 
             self.assertEqual(loaded.backend, BACKEND_AUTO)

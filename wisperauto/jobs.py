@@ -76,6 +76,8 @@ class JobRecord:
 
     @classmethod
     def from_dict(cls, payload: dict) -> "JobRecord":
+        if not isinstance(payload, dict):
+            raise ValueError("invalid job record payload")
         valid_keys = set(cls.__dataclass_fields__.keys())
         filtered = {key: value for key, value in payload.items() if key in valid_keys}
         return cls(**filtered)
@@ -137,7 +139,7 @@ class JobStore:
                     continue
                 try:
                     parsed.append(JobRecord.from_dict(json.loads(line)))
-                except (TypeError, json.JSONDecodeError):
+                except (TypeError, ValueError, json.JSONDecodeError):
                     continue
         return parsed
 

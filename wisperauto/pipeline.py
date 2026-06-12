@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import queue
 import re
@@ -12,7 +13,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol, cast
 
 from .cancel import CancellationToken
 from .backends import (
@@ -55,22 +56,31 @@ from .jobs import (
     JobStore,
     utc_now,
 )
-from .postprocess import MODE_RAW, MODE_SMART, PostProcessor
+from .postprocess import MODE_RAW, MODE_SMART, PostProcessor, PostProcessResult
 from .postprocess_llm import PostProcessProgress
 
 
 ProgressCallback = Callable[[JobRecord, str], None]
-PostProcessorFactory = Callable[[AppConfig], PostProcessor]
 
 
 class Engine(Protocol):
-    def transcribe(self, audio_path: Path):
+    def transcribe(self, audio_path: Path) -> Any:
         ...
 
 
-class EngineFactory(Protocol):
-    def __call__(self, config: AppConfig, allow_model_download: bool) -> Engine:
+class PostProcessorLike(Protocol):
+    def build_outputs(
+        self,
+        raw_text: str,
+        *,
+        progress_callback: Callable[[PostProcessProgress], None] | None = None,
+        cancel_token: CancellationToken | None = None,
+    ) -> PostProcessResult:
         ...
+
+
+EngineFactory = Callable[[AppConfig, bool], Engine]
+PostProcessorFactory = Callable[[AppConfig], PostProcessorLike]
 
 
 @dataclass
@@ -186,7 +196,7 @@ class TranscriptionPipeline:
         self._engine: Engine | None = None
         self._engine_key: tuple[object, ...] | None = None
         self._engine_lock = threading.Lock()
-        self._post_processor: PostProcessor | None = None
+        self._post_processor: PostProcessorLike | None = None
         self._post_processor_key: tuple[object, ...] | None = None
         self._post_processor_lock = threading.Lock()
 
@@ -548,14 +558,16 @@ class TranscriptionPipeline:
             text=True,
             bufsize=1,
         )
-        assert process.stdout is not None
+        stdout = process.stdout
+        if stdout is None:
+            raise FFmpegConversionError("Impossible de lire la sortie de FFmpeg.")
         last_progress = 8
         output: list[str] = []
         lines: queue.Queue[str] = queue.Queue()
 
         def read_output() -> None:
             try:
-                for item in process.stdout:
+                for item in stdout:
                     lines.put(item)
             finally:
                 lines.put("")
@@ -689,8 +701,10 @@ class TranscriptionPipeline:
                 eta_seconds=eta,
             )
 
-        if hasattr(engine, "transcribe_with_progress"):
-            segments, info = engine.transcribe_with_progress(
+        transcribe_with_progress = getattr(engine, "transcribe_with_progress", None)
+        if callable(transcribe_with_progress):
+            progress_transcriber = cast(Callable[..., Any], transcribe_with_progress)
+            segments, info = progress_transcriber(
                 audio_path,
                 progress_update=update_transcription_progress,
                 cancel_token=cancel_token,
@@ -806,7 +820,16 @@ class TranscriptionPipeline:
             os.replace(part_path, output_path)
             output_paths[mode] = str(output_path)
 
-        selected_mode = self.config.output_mode if self.config.output_mode in output_paths else MODE_SMART
+        if not output_paths:
+            raise PostProcessUnavailableError("aucune sortie de transcription produite")
+        if self.config.output_mode in output_paths:
+            selected_mode = self.config.output_mode
+        elif MODE_SMART in output_paths:
+            selected_mode = MODE_SMART
+        elif MODE_RAW in output_paths:
+            selected_mode = MODE_RAW
+        else:
+            selected_mode = next(iter(output_paths))
         self._update(
             record,
             progress_callback,
@@ -841,11 +864,12 @@ class TranscriptionPipeline:
         with self._engine_lock:
             if self._engine is not None and self._engine_key == key:
                 return self._engine
-            self._engine = self.engine_factory(self.config, allow_model_download)
+            engine = cast(Engine, self.engine_factory(self.config, allow_model_download))
+            self._engine = engine
             self._engine_key = key
-            return self._engine
+            return engine
 
-    def _get_post_processor(self) -> PostProcessor:
+    def _get_post_processor(self) -> PostProcessorLike:
         model_path = self.config.local_postprocess_model_path()
         key = (
             self.config.postprocess_engine,
@@ -883,9 +907,10 @@ class TranscriptionPipeline:
 
 def safe_float(value: str) -> float | None:
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def estimate_eta(elapsed_seconds: float, ratio: float) -> float | None:

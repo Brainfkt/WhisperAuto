@@ -236,13 +236,15 @@ def run_streamed_command(
             bufsize=1,
             env=env,
         )
-        assert process.stdout is not None
+        stdout = process.stdout
+        if stdout is None:
+            raise RuntimeError("Impossible de lire la sortie de la commande.")
 
         lines: queue.Queue[str] = queue.Queue()
 
         def read_output() -> None:
             try:
-                for line in process.stdout:
+                for line in stdout:
                     lines.put(line)
             finally:
                 lines.put("")

@@ -1457,11 +1457,14 @@ class SettingsDialog:
             self.status_var.set("Annulation demandee...")
             self.log("Annulation demandee par l'utilisateur.")
 
+    def _threadsafe_log(self, message: str) -> None:
+        self.window.after(0, self.log, message)
+
     def _run_install(self, plan: InstallPlan) -> None:
         try:
             run_install_plan(
                 plan,
-                logger=lambda message: self.window.after(0, self.log, message),
+                logger=self._threadsafe_log,
                 cancel_token=self.cancel_token,
             )
         except OperationCancelledError as exc:
@@ -1477,7 +1480,7 @@ class SettingsDialog:
             download_model(
                 self.app.config,
                 backend=backend,
-                logger=lambda message: self.window.after(0, self.log, message),
+                logger=self._threadsafe_log,
                 cancel_token=self.cancel_token,
             )
         except OperationCancelledError as exc:
@@ -1492,7 +1495,7 @@ class SettingsDialog:
         try:
             download_postprocess_model(
                 self.app.config,
-                logger=lambda message: self.window.after(0, self.log, message),
+                logger=self._threadsafe_log,
                 cancel_token=self.cancel_token,
             )
         except OperationCancelledError as exc:
@@ -1508,7 +1511,7 @@ class SettingsDialog:
             results = benchmark_backends(
                 self.app.config,
                 path,
-                logger=lambda message: self.window.after(0, self.log, message),
+                logger=self._threadsafe_log,
                 cancel_token=self.cancel_token,
             )
         except OperationCancelledError as exc:

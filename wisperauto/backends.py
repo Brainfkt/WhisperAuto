@@ -457,12 +457,14 @@ class WhisperCppEngine:
                 text=True,
                 bufsize=1,
             )
-            assert process.stdout is not None
+            stdout = process.stdout
+            if stdout is None:
+                raise RuntimeError("Impossible de lire la sortie de whisper.cpp.")
             lines: queue.Queue[str] = queue.Queue()
 
             def read_output() -> None:
                 try:
-                    for item in process.stdout:
+                    for item in stdout:
                         lines.put(item)
                 finally:
                     lines.put("")

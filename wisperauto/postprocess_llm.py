@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol, TypeVar, cast
 
 from .config import AppConfig
 from .errors import OperationCancelledError, PostProcessUnavailableError
 
 
 DEFAULT_MAX_CHUNK_CHARS = 5200
+T = TypeVar("T")
 
 SMART_OUTPUT_SCHEMA = {
     "type": "object",
@@ -106,7 +108,7 @@ Sortie obligatoire:
 
 
 class DirectPostProcessProvider(Protocol):
-    def generate_smart_text(self, chunk: str, *, chunk_index: int, total_chunks: int) -> str | dict:
+    def generate_smart_text(self, chunk: str, *, chunk_index: int, total_chunks: int) -> str | dict[str, Any]:
         ...
 
 
@@ -133,6 +135,9 @@ class DirectPostProcessResult:
 
 def strip_json_fence(content: str) -> str:
     content = content.strip()
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", content, flags=re.IGNORECASE | re.DOTALL)
+    if fenced:
+        return fenced.group(1).strip()
     if not content.startswith("```"):
         return content
     lines = content.splitlines()
@@ -143,11 +148,28 @@ def strip_json_fence(content: str) -> str:
     return "\n".join(lines).strip()
 
 
+def load_json_payload(content: str) -> object:
+    candidate = strip_json_fence(content)
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError as original_error:
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(candidate):
+            if char != "{":
+                continue
+            try:
+                payload, _end = decoder.raw_decode(candidate[index:])
+            except json.JSONDecodeError:
+                continue
+            return payload
+        raise original_error
+
+
 def parse_smart_payload(content: str | dict) -> tuple[str, list[str]]:
     if isinstance(content, dict):
         payload = content
     else:
-        payload = json.loads(strip_json_fence(content))
+        payload = load_json_payload(content)
     if not isinstance(payload, dict):
         raise ValueError("reponse JSON invalide")
 
@@ -187,7 +209,7 @@ class LlamaCppDirectProvider:
             "TRANSCRIPTION BRUTE:\n"
             f"{chunk}"
         )
-        result = self.llm.create_chat_completion(
+        result = cast(Any, self.llm).create_chat_completion(
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
@@ -199,8 +221,12 @@ class LlamaCppDirectProvider:
                 "type": "json_object",
                 "schema": SMART_OUTPUT_SCHEMA,
             },
+            stream=False,
         )
-        return result["choices"][0]["message"]["content"]
+        content = result["choices"][0]["message"].get("content")
+        if not isinstance(content, str):
+            raise RuntimeError("reponse LLM vide ou invalide")
+        return content
 
 
 class DirectLLMPostProcessor:
@@ -234,6 +260,7 @@ class DirectLLMPostProcessor:
         progress_callback: PostProcessProgressCallback | None = None,
         cancel_token=None,
     ) -> DirectPostProcessResult:
+        self.actions = []
         if not raw_text.strip():
             return DirectPostProcessResult(text="", warnings=[], chunks=0)
 
@@ -362,11 +389,13 @@ class DirectLLMPostProcessor:
         progress_callback: PostProcessProgressCallback | None,
         cancel_token,
         started_at: float,
-    ) -> str | dict:
-        assert self.provider is not None
+    ) -> str | dict[str, Any]:
+        provider = self.provider
+        if provider is None:
+            raise PostProcessUnavailableError("post-processeur LLM indisponible")
 
-        def generate() -> str | dict:
-            return self.provider.generate_smart_text(
+        def generate() -> str | dict[str, Any]:
+            return provider.generate_smart_text(
                 chunk,
                 chunk_index=chunk_index,
                 total_chunks=total_chunks,
@@ -386,7 +415,7 @@ class DirectLLMPostProcessor:
 
     def _run_blocking_with_heartbeat(
         self,
-        operation: Callable[[], object],
+        operation: Callable[[], T],
         *,
         progress_callback: PostProcessProgressCallback | None,
         cancel_token,
@@ -396,8 +425,8 @@ class DirectLLMPostProcessor:
         chunk_index: int,
         total_chunks: int,
         completed_chunks: int,
-    ):
-        results: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+    ) -> T:
+        results: queue.Queue[tuple[bool, T | BaseException]] = queue.Queue(maxsize=1)
 
         def run() -> None:
             try:
@@ -435,8 +464,10 @@ class DirectLLMPostProcessor:
         if cancelled_seen and cancel_token is not None:
             cancel_token.raise_if_cancelled()
         if ok:
-            return payload
-        raise payload
+            return cast(T, payload)
+        if isinstance(payload, BaseException):
+            raise payload
+        raise RuntimeError(str(payload))
 
     @staticmethod
     def _emit(progress_callback: PostProcessProgressCallback | None, event: PostProcessProgress) -> None:

@@ -131,6 +131,41 @@ class DirectLLMPostProcessorTest(unittest.TestCase):
         self.assertEqual(text, "Bonjour.\n")
         self.assertEqual(warnings, ["nom incertain"])
 
+    def test_parse_smart_payload_accepts_prefaced_json_fence(self):
+        text, warnings = parse_smart_payload(
+            'Voici la sortie JSON :\n```json\n{"smart_text":"Bonjour.","warnings":[]}\n```\nFin.'
+        )
+
+        self.assertEqual(text, "Bonjour.")
+        self.assertEqual(warnings, [])
+
+    def test_parse_smart_payload_accepts_json_object_with_trailing_text(self):
+        text, warnings = parse_smart_payload(
+            'Resultat:\n{"smart_text":"Bonjour.","warnings":["doute"]}\nMerci.'
+        )
+
+        self.assertEqual(text, "Bonjour.")
+        self.assertEqual(warnings, ["doute"])
+
+    def test_actions_do_not_accumulate_when_processor_is_reused(self):
+        config = AppConfig(home=Path("/tmp/wisperauto-test"))
+        provider = FakeDirectProvider(
+            [
+                {"smart_text": "Premier.", "warnings": []},
+                {"smart_text": "Deuxieme.", "warnings": []},
+            ]
+        )
+        engine = DirectLLMPostProcessor(config, provider=provider)
+
+        first = engine.apply("Premier point")
+        first_actions = list(engine.actions)
+        second = engine.apply("Deuxieme point")
+
+        self.assertEqual(first.text, "Premier.\n")
+        self.assertEqual(second.text, "Deuxieme.\n")
+        self.assertEqual(first_actions, ["Post-traitement LLM local : 1 segment(s) traite(s)."])
+        self.assertEqual(engine.actions, ["Post-traitement LLM local : 1 segment(s) traite(s)."])
+
 
 if __name__ == "__main__":
     unittest.main()

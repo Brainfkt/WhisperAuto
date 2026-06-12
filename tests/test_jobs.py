@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 import warnings
@@ -29,8 +30,26 @@ class JobStoreTest(unittest.TestCase):
             deleted = store.delete("one")
             remaining = store.latest()
 
+            assert deleted is not None
             self.assertEqual(deleted.id, "one")
             self.assertEqual([record.id for record in remaining], ["two"])
+
+    def test_latest_ignores_non_object_json_lines(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history_path = Path(tmpdir) / "history.jsonl"
+            valid = JobRecord(id="valid", source_name="valid.mp3", source_path="/tmp/valid.mp3")
+            history_path.parent.mkdir(parents=True, exist_ok=True)
+            history_path.write_text(
+                "[]\n"
+                + json.dumps(valid.to_dict(), ensure_ascii=False)
+                + "\n",
+                encoding="utf-8",
+            )
+            store = JobStore(history_path)
+
+            latest = store.latest()
+
+            self.assertEqual([record.id for record in latest], ["valid"])
 
     def test_recover_interrupted_records_marks_stale_transcription_retryable(self):
         with tempfile.TemporaryDirectory() as tmpdir:
