@@ -1,202 +1,153 @@
-WisperAuto - installation rapide Windows
+WisperAuto - guide d'installation rapide
 =======================================
 
 Objectif
 --------
-WisperAuto transcrit localement des fichiers audio et produit plusieurs sorties :
-- transcription brute ;
-- transcription nettoyee ;
-- transcription intelligente avec commandes vocales interpretees ;
-- compte rendu structure non generatif.
+WisperAuto transcrit localement des fichiers audio puis produit :
+- une transcription brute ;
+- une transcription intelligente par LLM local ;
+- un compte rendu structure.
 
-Les fichiers audio ne sont pas envoyes en ligne. Le seul acces Internet possible est
-le telechargement initial du modele Whisper si aucun modele local n'est disponible
-et si l'utilisateur l'autorise explicitement.
-
-
-1. Installer Python
--------------------
-Installer Python 3.11 ou 3.12 :
-https://www.python.org/downloads/windows/
-
-Verifier dans un terminal :
-python --version
-
-Pour le deploiement client, eviter Python global Anaconda et Python 3.13.
-Le lanceur Windows cree un venv local ".venv" avec Python 3.11 en priorite,
-puis Python 3.12 si 3.11 n'est pas disponible.
+Les audios ne sont pas envoyes en ligne. Internet est utilise uniquement si
+l'utilisateur lance explicitement une installation ou un telechargement depuis
+l'interface.
 
 
-2. Installer les dependances depuis l'interface
------------------------------------------------
-Au lancement, ouvrir :
-Parametres -> Installer FFmpeg
-Parametres -> choisir le moteur
-Parametres -> Installer moteur
-Parametres -> Telecharger modele moteur
+Installation recommandee Windows
+--------------------------------
+1. Installer Python 3.11 ou 3.12 :
+   https://www.python.org/downloads/windows/
 
-Sur Windows, l'installation automatique de FFmpeg utilise en priorite winget,
-puis Chocolatey ou Scoop si disponibles. Si aucun installateur n'est disponible,
-installer FFmpeg manuellement :
+2. Placer le projet dans un dossier simple, par exemple :
+   C:\WisperAuto
 
-1. Telecharger "release essentials" :
-   https://www.gyan.dev/ffmpeg/builds/
-2. Extraire dans :
-   C:\ffmpeg
-3. Ajouter au PATH :
-   C:\ffmpeg\bin
-4. Verifier :
-   ffmpeg -version
+3. Double-cliquer :
+   start_whisper.bat
+
+Le lanceur cree un venv local ".venv" si besoin. Il privilegie Python 3.11 ou
+3.12 et evite Python global Anaconda / Python 3.13 pour le deploiement client.
 
 
-3. Lancer WisperAuto
---------------------
-Placer le dossier du projet par exemple dans :
-C:\WisperAuto
+Premiere configuration depuis l'interface
+-----------------------------------------
+Ouvrir Parametres > Telechargements, puis installer dans cet ordre :
 
-Double-cliquer :
-start_whisper.bat
+1. FFmpeg / ffprobe
+2. Moteur faster-whisper, ou garder le moteur Auto
+3. Modele moteur
+4. Post-traitement LLM local
+5. Modele post-traitement LLM GGUF
 
-Au premier lancement, le script cree un environnement Python local ".venv".
+Modele conseille :
+- large-v3-turbo pour une bonne precision avec une UX locale raisonnable ;
+- medium si le poste est lent ou sans GPU.
 
-Les donnees utilisateur sont stockees par defaut dans :
+
+Installation macOS / Linux
+--------------------------
+Depuis le dossier du projet :
+
+python3.12 -m venv .venv
+source .venv/bin/activate
+python auto_transcribe.py
+
+Puis installer FFmpeg, moteur, modeles et LLM depuis Parametres >
+Telechargements.
+
+Notes :
+- Python 3.11 fonctionne aussi.
+- Sur Mac Apple Silicon, tester le moteur MLX Mac si disponible.
+- Sur Linux, installer le paquet systeme Python Tk si l'interface ne s'ouvre pas.
+
+
+Utilisation
+-----------
+1. Cliquer Ajouter.
+2. Choisir un ou plusieurs fichiers audio.
+3. Cliquer Transcrire ou Tout.
+4. Suivre la progression en bas de l'application.
+5. Choisir le mode de sortie : brute, intelligente ou compte rendu.
+6. Utiliser Copier, Exporter ou Dossier.
+
+Pendant le post-traitement intelligent, l'application affiche le chargement du
+LLM local, le segment en cours, le temps ecoule et une ETA quand elle est fiable.
+
+Le bouton Annuler demande l'arret du traitement. Pendant un appel LLM long,
+l'annulation est appliquee a la fin du segment en cours.
+
+Le bouton Supprimer retire l'entree d'historique et les fichiers texte generes.
+Les audios archives ou echoues sont conserves pour eviter une perte.
+
+
+Telechargements Hugging Face plus rapides
+-----------------------------------------
+Si un modele se telecharge lentement :
+
+1. Ouvrir Parametres > Telechargements.
+2. Cliquer Creer token.
+3. Creer un token Hugging Face en lecture seule.
+4. Coller le token dans HF token puis Enregistrer.
+5. Activer Telechargement rapide Xet si souhaite.
+
+Le token est stocke localement dans settings.json et n'est pas affiche dans les
+commandes du journal.
+
+
+Dossier de donnees
+------------------
+Par defaut :
 %USERPROFILE%\Documents\WisperAuto
 
-Pour utiliser un autre dossier :
+Sous macOS / Linux :
+~/Documents/WisperAuto
+
+Principaux sous-dossiers :
+- inbox : fichiers ajoutes avant traitement ;
+- processed : audios traites ;
+- failed : audios en erreur ;
+- outbox : transcriptions ;
+- logs : historique local ;
+- models : modeles locaux.
+
+Pour changer de dossier sous Windows :
 set WISPERAUTO_HOME=D:\WisperAutoData
 start_whisper.bat
 
 
-4. Utilisation
---------------
-Dans l'application :
-1. Cliquer "Ajouter fichiers".
-2. Selectionner un ou plusieurs fichiers .mp3, .wav, .m4a, .dss ou .ds2.
-3. Les fichiers apparaissent dans "File et historique".
-4. Cliquer "Transcrire selection" ou "Tout transcrire".
-5. Suivre la progression, l'etat et l'ETA quand elle est disponible.
-6. Comparer les modes via le menu :
-   - Transcription brute ;
-   - Transcription nettoyee ;
-   - Transcription intelligente ;
-   - Compte rendu structure.
-7. Dans Parametres, choisir le profil performance :
-   - Rapide ;
-   - Equilibre ;
-   - Precis.
-8. Utiliser "Copier", "Exporter" ou "Dossier".
-
-Le bouton "Annuler" annule un traitement actif ou une entree encore en attente.
-Le bouton "Supprimer" retire l'entree d'historique et les sorties .txt generees.
-Les audios archives ou echoues sont conserves pour eviter une perte.
-
-Le bouton "Tester performances" dans Parametres lance un benchmark local sur un
-extrait temporaire du fichier choisi. Il compare les moteurs qui ont deja un
-modele local et affiche le ratio temps reel ainsi que le moteur recommande.
-
-
-5. Commandes vocales configurables
-----------------------------------
-Au premier lancement, WisperAuto cree :
-%USERPROFILE%\Documents\WisperAuto\voice_commands.json
-
-Ce fichier permet d'ajouter ou modifier les commandes vocales :
-- "sauter ligne" -> retour a la ligne ;
-- "nouveau paragraphe" -> nouveau paragraphe ;
-- "point", "virgule", "deux-points" -> ponctuation ;
-- "nouvelle puce", "fin de liste" -> listes ;
-- marqueurs de contexte pour eviter les transformations risquees.
-
-En cas d'ambiguite, WisperAuto privilegie la transcription naturelle.
-
-
-6. Confidentialite
-------------------
-- Traitement audio local.
-- Historique local dans le dossier WisperAuto.
-- Aucun envoi audio volontaire.
-- Telechargement du modele uniquement apres consentement.
-- Les modeles sont telecharges par moteur et par format :
-  models\faster-whisper\<modele>
-  models\mlx-whisper\<modele>
-  models\whisper.cpp\<modele>
-- Les fichiers echoues sont conserves dans "failed" pour eviter une perte.
-
-Attention : les transcriptions peuvent contenir des informations sensibles.
-Eviter de placer le dossier WisperAuto dans un service de synchronisation cloud.
-
-
-7. Depannage
-------------
+Depannage
+---------
 FFmpeg introuvable :
-- verifier que C:\ffmpeg\bin est dans le PATH ;
-- relancer le terminal ou Windows.
+- installer FFmpeg depuis Parametres > Telechargements ;
+- relancer WisperAuto si le PATH a change.
 
-Modele absent :
-- ouvrir Parametres puis cliquer "Telecharger modele moteur" ;
-- ou definir le chemin de modele adapte :
-  WISPERAUTO_MODEL_PATH pour faster-whisper ;
-  WISPERAUTO_MLX_MODEL_PATH pour MLX ;
-  WISPERAUTO_WHISPER_CPP_MODEL_PATH pour whisper.cpp.
+Modele moteur absent :
+- choisir le moteur et le modele dans Parametres ;
+- cliquer Telecharger modele moteur.
 
-Le telechargement du modele affiche un journal avec des messages reguliers
-d'avancement. Par defaut, le delai maximal est de 120 minutes. Pour le modifier :
-set WISPERAUTO_MODEL_DOWNLOAD_TIMEOUT_MINUTES=180
-start_whisper.bat
-
-Si le telechargement de large-v3 est trop lent, choisir "small" ou "medium" dans
-Parametres avant de telecharger le modele. Le modele par defaut est
-large-v3-turbo, qui est plus adapte a une UX locale que large-v3 complet.
-Par defaut, WisperAuto desactive le backend Hugging Face Xet pour que le fichier
-model.bin progresse de facon plus lisible dans le dossier cible. Pour reactiver Xet :
-set WISPERAUTO_DISABLE_HF_XET=0
-start_whisper.bat
-
-faster-whisper absent :
-- ouvrir Parametres ;
-- choisir "faster-whisper" ou "Auto" ;
-- cliquer "Installer moteur".
-
-MLX Mac absent :
-- disponible uniquement sur Mac Apple Silicon ;
-- choisir "MLX Mac" puis cliquer "Installer moteur" ;
-- telecharger ensuite le modele MLX depuis la meme fenetre.
-
-whisper.cpp absent :
-- sur macOS avec Homebrew, choisir "whisper.cpp" puis "Installer moteur" ;
-- sinon installer manuellement le binaire whisper-cli ;
-- definir WISPERAUTO_WHISPER_CPP_BINARY si le binaire n'est pas dans le PATH.
-
-FFmpeg absent :
-- ouvrir Parametres ;
-- cliquer "Installer FFmpeg" ;
-- si Windows ne met pas le PATH a jour dans la session courante, relancer WisperAuto.
-
-Audio DSS/DS2 illisible :
-- certains formats DSS Pro ou DS2 ne sont pas pris en charge par FFmpeg ;
-- convertir d'abord avec le logiciel du dictaphone si necessaire.
+LLM intelligent indisponible :
+- installer Post-traitement LLM local ;
+- telecharger Modele post-traitement LLM GGUF ;
+- la transcription brute reste disponible en cas d'erreur.
 
 Transcription lente :
-- utiliser le profil "Rapide" dans Parametres ;
-- sur Mac Apple Silicon, essayer le moteur "MLX Mac" ;
-- sur Windows/Linux avec GPU NVIDIA, utiliser "Auto" ou "faster-whisper" avec CUDA disponible ;
-- en CPU-only, essayer "small" ou "medium", ou "whisper.cpp" avec modele quantized ;
-- lancer "Tester performances" dans Parametres pour comparer les moteurs locaux ;
-- essayer un modele plus petit :
-  set WISPERAUTO_MODEL=medium
-  start_whisper.bat
-- les fichiers .mp3, .m4a et .wav sont lus directement quand possible ;
-- le modele reste charge en memoire pendant le batch pour accelerer les fichiers suivants.
+- utiliser le profil Rapide ;
+- essayer le modele medium ;
+- lancer Tester performances ;
+- sur Mac Apple Silicon, tester MLX Mac ;
+- en CPU-only, tester whisper.cpp avec un modele quantized.
 
-Reglages performance avances possibles par variable d'environnement :
-- WISPERAUTO_CPU_THREADS=6
-- WISPERAUTO_BATCH_SIZE=4
-- WISPERAUTO_WHISPER_CPP_THREADS=6
-- WISPERAUTO_VAD_SILENCE_MS=500
-- WISPERAUTO_BENCHMARK_SECONDS=90
+DSS / DS2 illisible :
+- certains fichiers DSS Pro ou DS2 ne sont pas pris en charge par FFmpeg ;
+- convertir avec le logiciel du dictaphone avant import si necessaire.
 
-Mode console surveillance :
-python auto_transcribe.py --watch
 
-Traitement d'un seul fichier :
+Mode console
+------------
+Interface graphique :
+python auto_transcribe.py
+
+Transcrire un fichier :
 python auto_transcribe.py --once "C:\chemin\fichier.mp3"
+
+Surveiller le dossier inbox :
+python auto_transcribe.py --watch
